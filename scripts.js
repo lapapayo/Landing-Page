@@ -31,6 +31,13 @@ const IDLE_FRAME = 0;
 const WALK_FRAME = 1;
 const PLAYER_SCALE = 4;
 const bgImage = loadSprite("bg.png");
+const nurseJoyImage = loadSprite("Spritesnpcs/joynurses.png");
+const nurseJoy = {
+    x: 720,
+    y: 192,
+    width: 112,
+    height: 114
+};
 
 const collisionAreas = [
     { x: 423, y: 204, width: 735, height: 233 },
@@ -119,6 +126,27 @@ function scaleRect(rect, bgRect) {
     };
 }
 
+function drawNurseJoy(bgRect) {
+    if (!nurseJoyImage.complete || !nurseJoyImage.naturalWidth) {
+        return;
+    }
+
+    ctx.imageSmoothingEnabled = false;
+    const spriteScale = 1;
+    const drawWidth = nurseJoyImage.naturalWidth * spriteScale;
+    const drawHeight = nurseJoyImage.naturalHeight * spriteScale;
+    const anchorX = bgRect.x + (nurseJoy.x / bgImage.width) * bgRect.width;
+    const anchorY = bgRect.y + (nurseJoy.y / bgImage.height) * bgRect.height;
+
+    ctx.drawImage(
+        nurseJoyImage,
+        Math.round(anchorX),
+        Math.round(anchorY),
+        drawWidth,
+        drawHeight
+    );
+}
+
 function getPlayerHitbox(nextX = player.x, nextY = player.y) {
     const currentAnimation = animations[direction];
     const currentFrame = currentAnimation[frame] || currentAnimation[IDLE_FRAME];
@@ -177,6 +205,52 @@ function movePlayer(dx, dy) {
     }
 
     return moved;
+}
+
+function getCenteredSpawnPosition() {
+    const idleSprite = spriteImages.downIdle;
+
+    if (!bgImage.complete || !bgImage.naturalWidth || !idleSprite.complete || !idleSprite.naturalWidth) {
+        return { x: player.x, y: player.y };
+    }
+
+    const bgRect = getBackgroundRect();
+    const drawWidth = Math.round(idleSprite.width * PLAYER_SCALE);
+    const drawHeight = Math.round(idleSprite.height * PLAYER_SCALE);
+    const preferredX = Math.round(bgRect.x + bgRect.width / 2 - drawWidth / 2);
+    const preferredY = Math.round(bgRect.y + bgRect.height / 2 - drawHeight / 2);
+
+    if (canMoveTo(preferredX, preferredY)) {
+        return { x: preferredX, y: preferredY };
+    }
+
+    const step = 8;
+    const maxRadius = Math.ceil(Math.max(bgRect.width, bgRect.height) / step);
+
+    for (let radius = 1; radius <= maxRadius; radius++) {
+        for (let offsetY = -radius; offsetY <= radius; offsetY++) {
+            for (let offsetX = -radius; offsetX <= radius; offsetX++) {
+                if (Math.abs(offsetX) !== radius && Math.abs(offsetY) !== radius) {
+                    continue;
+                }
+
+                const candidateX = preferredX + offsetX * step;
+                const candidateY = preferredY + offsetY * step;
+
+                if (canMoveTo(candidateX, candidateY)) {
+                    return { x: candidateX, y: candidateY };
+                }
+            }
+        }
+    }
+
+    return { x: preferredX, y: preferredY };
+}
+
+function placePlayerAtRoomCenter() {
+    const spawn = getCenteredSpawnPosition();
+    player.x = spawn.x;
+    player.y = spawn.y;
 }
 
 // 🎹 Teclas
@@ -290,6 +364,7 @@ function draw() {
     if (bgImage.complete) {
         const bgRect = getBackgroundRect();
         ctx.drawImage(bgImage, bgRect.x, bgRect.y, bgRect.width, bgRect.height);
+        drawNurseJoy(bgRect);
     }
 
     const currentAnimation = animations[direction];
@@ -339,7 +414,7 @@ function gameLoop() {
     requestAnimationFrame(gameLoop);
 }
 
-const allSprites = [bgImage, ...Object.values(spriteImages)];
+const allSprites = [bgImage, nurseJoyImage, ...Object.values(spriteImages)];
 let loadedSprites = 0;
 
 allSprites.forEach((image) => {
@@ -347,6 +422,7 @@ allSprites.forEach((image) => {
         loadedSprites++;
 
         if (loadedSprites === allSprites.length) {
+            placePlayerAtRoomCenter();
             gameLoop();
         }
     };
