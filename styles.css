@@ -10,11 +10,15 @@ html, body {
 }
  
 body {
-  background-image: url("bg.png");
-  background-size: contain;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
+  background: #000;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+#gameCanvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
