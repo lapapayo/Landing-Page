@@ -1,57 +1,31 @@
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
-const DPR = window.devicePixelRatio || 1;
 
-ctx.imageSmoothingEnabled = false;
-
-function resizeCanvas() {
-    canvas.width = Math.floor(window.innerWidth * DPR);
-    canvas.height = Math.floor(window.innerHeight * DPR);
-    canvas.style.width = `${window.innerWidth}px`;
-    canvas.style.height = `${window.innerHeight}px`;
-    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-}
-
-resizeCanvas();
-window.addEventListener("resize", resizeCanvas);
-
-// 🎮 Jugador
-const player = {
-    x: 200,
-    y: 200,
-    speed: 2,
-    runSpeed: 4
+const viewport = {
+    dpr: window.devicePixelRatio || 1,
+    width: window.innerWidth,
+    height: window.innerHeight
 };
 
+const keys = {};
+let target = null;
 let frame = 0;
 let frameTimer = 0;
 let direction = "down";
+let gameStarted = false;
+let interactionRequested = false;
+const spriteCollisionBounds = {};
+
 const IDLE_FRAME = 0;
-const WALK_FRAME = 1;
-const PLAYER_SCALE = 4;
-const bgImage = loadSprite("bg.png");
-const nurseJoyImage = loadSprite("Spritesnpcs/joynurses.png");
-const nurseJoy = {
-    x: 720,
-    y: 192,
-    width: 112,
-    height: 114
+const WORLD_STEP = 2;
+const WORLD_RUN_STEP = 4;
+const PLAYER_COLLISION_MARGIN = 8;
+const PLAYER_COLLISION_BASE = {
+    width: 16,
+    height: 19
 };
 
-const collisionAreas = [
-    { x: 423, y: 204, width: 735, height: 233 },
-    { x: 88, y: 89, width: 325, height: 188 },
-    { x: 1166, y: 70, width: 146, height: 210 },
-    { x: 401, y: 270, width: 92, height: 91 },
-    { x: 1049, y: 271, width: 92, height: 91 },
-    { x: 252, y: 660, width: 116, height: 62 },
-    { x: 252, y: 722, width: 44, height: 131 },
-    { x: 324, y: 722, width: 44, height: 131 },
-    { x: 1165, y: 661, width: 115, height: 62 },
-    { x: 1165, y: 723, width: 44, height: 130 },
-    { x: 1236, y: 723, width: 44, height: 130 }
-];
+ctx.imageSmoothingEnabled = false;
 
 function loadSprite(src) {
     const image = new Image();
@@ -59,106 +33,339 @@ function loadSprite(src) {
     return image;
 }
 
-const spriteImages = {
-    downIdle: loadSprite("Spritesheet/abajoquieto.png"),
-    downWalk1: loadSprite("Spritesheet/abajoandando1.png"),
-    upIdle: loadSprite("Spritesheet/arribaquieto.png"),
-    upWalk1: loadSprite("Spritesheet/arribaandando1.png"),
-    leftIdle: loadSprite("Spritesheet/izquierdaquieto.png"),
-    leftWalk1: loadSprite("Spritesheet/izquierdaandando1.png"),
-    leftWalk2: loadSprite("Spritesheet/izquierdandando2.png")
+const spriteAssets = {
+    background: loadSprite("bg.png"),
+    nurseJoy: loadSprite("Spritesnpcs/joynurses.png"),
+    playerDownIdle: loadSprite("Spritesheet/abajoquieto.png"),
+    playerDownWalk1: loadSprite("Spritesheet/abajoandando1.png"),
+    playerUpIdle: loadSprite("Spritesheet/arribaquieto.png"),
+    playerUpWalk1: loadSprite("Spritesheet/arribaandando1.png"),
+    playerLeftIdle: loadSprite("Spritesheet/izquierdaquieto.png"),
+    playerLeftWalk1: loadSprite("Spritesheet/izquierdaandando1.png"),
+    playerLeftWalk2: loadSprite("Spritesheet/izquierdandando2.png")
+};
+
+const spriteControls = {
+    background: {
+        x: 0,
+        y: 0,
+        width: null,
+        height: null
+    },
+    nurseJoy: {
+        x: 720,
+        y: 192,
+        width: 112,
+        height: 114
+    },
+    playerDownIdle: {
+        x: 0,
+        y: 0,
+        width: 96,
+        height: 120
+    },
+    playerDownWalk1: {
+        x: 0,
+        y: 0,
+        width: 96,
+        height: 126
+    },
+    playerUpIdle: {
+        x: 0,
+        y: 0,
+        width: 96,
+        height: 126
+    },
+    playerUpWalk1: {
+        x: 0,
+        y: 0,
+        width: 96,
+        height: 126
+    },
+    playerLeftIdle: {
+        x: 0,
+        y: 0,
+        width: 102,
+        height: 126
+    },
+    playerLeftWalk1: {
+        x: 0,
+        y: 0,
+        width: 108,
+        height: 126
+    },
+    playerLeftWalk2: {
+        x: 0,
+        y: 0,
+        width: 108,
+        height: 126
+    }
+};
+
+window.spriteControls = spriteControls;
+
+function insetRect(rect, insetLeft = 0, insetTop = 0, insetRight = insetLeft, insetBottom = insetTop) {
+    return {
+        x: rect.x + insetLeft,
+        y: rect.y + insetTop,
+        width: rect.width - insetLeft - insetRight,
+        height: rect.height - insetTop - insetBottom
+    };
+}
+
+const collisionSpriteInstances = [
+    { type: "armario", x: 88, y: 89, width: 325, height: 188 },
+    { type: "pc", x: 1166, y: 70, width: 146, height: 210 },
+    { type: "mesa", x: 401, y: 270, width: 92, height: 91 },
+    { type: "mesa", x: 1049, y: 271, width: 92, height: 91 },
+    { type: "mesa", x: 252, y: 660, width: 116, height: 62 },
+    { type: "pc", x: 252, y: 722, width: 44, height: 131 },
+    { type: "pc", x: 324, y: 722, width: 44, height: 131 },
+    { type: "mesa", x: 1165, y: 661, width: 115, height: 62 },
+    { type: "pc", x: 1165, y: 723, width: 44, height: 130 },
+    { type: "pc", x: 1236, y: 723, width: 44, height: 130 }
+];
+
+const mostradorCollisionAreas = [
+    { x: 731, y: 275, width: 97, height: 156 }
+];
+
+function getInstanceCollisionRect(instance) {
+    if (instance.type === "mesa") {
+        return insetRect(instance, 22, 18, 22, 24);
+    }
+
+    if (instance.type === "pc") {
+        return insetRect(instance, 10, 10, 10, 16);
+    }
+
+    if (instance.type === "armario") {
+        return insetRect(instance, 22, 18, 22, 24);
+    }
+
+    return {
+        x: instance.x,
+        y: instance.y,
+        width: instance.width,
+        height: instance.height
+    };
+}
+
+const collisionAreas = [
+    ...mostradorCollisionAreas,
+    ...collisionSpriteInstances.map((instance) => getInstanceCollisionRect(instance))
+];
+
+const player = {
+    x: 0,
+    y: 0,
+    speed: WORLD_STEP,
+    runSpeed: WORLD_RUN_STEP
 };
 
 const animations = {
     down: [
-        { image: spriteImages.downIdle, flipX: false },
-        { image: spriteImages.downWalk1, flipX: false },
-        { image: spriteImages.downWalk1, flipX: true }
+        { assetKey: "playerDownIdle", flipX: false },
+        { assetKey: "playerDownWalk1", flipX: false },
+        { assetKey: "playerDownWalk1", flipX: true }
     ],
     up: [
-        { image: spriteImages.upIdle, flipX: false },
-        { image: spriteImages.upWalk1, flipX: false },
-        { image: spriteImages.upWalk1, flipX: true }
+        { assetKey: "playerUpIdle", flipX: false },
+        { assetKey: "playerUpWalk1", flipX: false },
+        { assetKey: "playerUpWalk1", flipX: true }
     ],
     left: [
-        { image: spriteImages.leftIdle, flipX: false },
-        { image: spriteImages.leftWalk1, flipX: false },
-        { image: spriteImages.leftWalk2, flipX: false }
+        { assetKey: "playerLeftIdle", flipX: false },
+        { assetKey: "playerLeftWalk1", flipX: false },
+        { assetKey: "playerLeftWalk2", flipX: false }
     ],
     right: [
-        { image: spriteImages.leftIdle, flipX: true },
-        { image: spriteImages.leftWalk1, flipX: true },
-        { image: spriteImages.leftWalk2, flipX: true }
+        { assetKey: "playerLeftIdle", flipX: true },
+        { assetKey: "playerLeftWalk1", flipX: true },
+        { assetKey: "playerLeftWalk2", flipX: true }
     ]
 };
 
-function getBackgroundRect() {
-    const imageRatio = bgImage.width / bgImage.height;
-    const viewportWidth = canvas.width / DPR;
-    const viewportHeight = canvas.height / DPR;
-    const canvasRatio = viewportWidth / viewportHeight;
+function resizeCanvas() {
+    viewport.dpr = window.devicePixelRatio || 1;
+    viewport.width = window.innerWidth;
+    viewport.height = window.innerHeight;
 
-    let drawWidth;
-    let drawHeight;
+    canvas.width = Math.floor(viewport.width * viewport.dpr);
+    canvas.height = Math.floor(viewport.height * viewport.dpr);
+    canvas.style.width = `${viewport.width}px`;
+    canvas.style.height = `${viewport.height}px`;
 
-    if (canvasRatio > imageRatio) {
-        drawHeight = viewportHeight;
-        drawWidth = drawHeight * imageRatio;
-    } else {
-        drawWidth = viewportWidth;
-        drawHeight = drawWidth / imageRatio;
-    }
-
-    return {
-        x: Math.round((viewportWidth - drawWidth) / 2),
-        y: Math.round((viewportHeight - drawHeight) / 2),
-        width: Math.round(drawWidth),
-        height: Math.round(drawHeight)
-    };
-}
-
-function scaleRect(rect, bgRect) {
-    return {
-        x: Math.round(bgRect.x + (rect.x / bgImage.width) * bgRect.width),
-        y: Math.round(bgRect.y + (rect.y / bgImage.height) * bgRect.height),
-        width: Math.round((rect.width / bgImage.width) * bgRect.width),
-        height: Math.round((rect.height / bgImage.height) * bgRect.height)
-    };
-}
-
-function drawNurseJoy(bgRect) {
-    if (!nurseJoyImage.complete || !nurseJoyImage.naturalWidth) {
-        return;
-    }
-
+    ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    const spriteScale = 1;
-    const drawWidth = nurseJoyImage.naturalWidth * spriteScale;
-    const drawHeight = nurseJoyImage.naturalHeight * spriteScale;
-    const anchorX = bgRect.x + (nurseJoy.x / bgImage.width) * bgRect.width;
-    const anchorY = bgRect.y + (nurseJoy.y / bgImage.height) * bgRect.height;
+}
 
-    ctx.drawImage(
-        nurseJoyImage,
-        Math.round(anchorX),
-        Math.round(anchorY),
-        drawWidth,
-        drawHeight
-    );
+function getCurrentFrameConfig() {
+    const currentAnimation = animations[direction];
+    return currentAnimation[frame] || currentAnimation[IDLE_FRAME];
+}
+
+function getSpriteDimensions(assetKey) {
+    const image = spriteAssets[assetKey];
+    const controls = spriteControls[assetKey];
+
+    return {
+        width: controls.width ?? image.naturalWidth,
+        height: controls.height ?? image.naturalHeight
+    };
+}
+
+function computeOpaqueBounds(image) {
+    try {
+        const buffer = document.createElement("canvas");
+        const bufferCtx = buffer.getContext("2d", { willReadFrequently: true });
+
+        buffer.width = image.naturalWidth;
+        buffer.height = image.naturalHeight;
+        bufferCtx.clearRect(0, 0, buffer.width, buffer.height);
+        bufferCtx.drawImage(image, 0, 0);
+
+        const { data, width, height } = bufferCtx.getImageData(0, 0, buffer.width, buffer.height);
+        let minX = width;
+        let minY = height;
+        let maxX = -1;
+        let maxY = -1;
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const alpha = data[(y * width + x) * 4 + 3];
+
+                if (alpha === 0) {
+                    continue;
+                }
+
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x);
+                maxY = Math.max(maxY, y);
+            }
+        }
+
+        if (maxX === -1) {
+            return {
+                x: 0,
+                y: 0,
+                width,
+                height
+            };
+        }
+
+        return {
+            x: minX,
+            y: minY,
+            width: maxX - minX + 1,
+            height: maxY - minY + 1
+        };
+    } catch (error) {
+        return {
+            x: 0,
+            y: 0,
+            width: image.naturalWidth,
+            height: image.naturalHeight
+        };
+    }
+}
+
+function cacheSpriteCollisionBounds() {
+    Object.entries(spriteAssets).forEach(([assetKey, image]) => {
+        if (!image.complete || !image.naturalWidth || assetKey === "background" || assetKey === "nurseJoy") {
+            return;
+        }
+
+        spriteCollisionBounds[assetKey] = computeOpaqueBounds(image);
+    });
+}
+
+function getWorldRect() {
+    const background = spriteAssets.background;
+    const controls = spriteControls.background;
+    const sourceWidth = controls.width ?? background.naturalWidth;
+    const sourceHeight = controls.height ?? background.naturalHeight;
+    const worldRatio = sourceWidth / sourceHeight;
+    const viewportRatio = viewport.width / viewport.height;
+
+    let width;
+    let height;
+
+    if (viewportRatio > worldRatio) {
+        height = viewport.height;
+        width = height * worldRatio;
+    } else {
+        width = viewport.width;
+        height = width / worldRatio;
+    }
+
+    return {
+        x: Math.round((viewport.width - width) / 2),
+        y: Math.round((viewport.height - height) / 2),
+        width: Math.round(width),
+        height: Math.round(height),
+        sourceWidth,
+        sourceHeight
+    };
+}
+
+function worldToScreenX(worldX, worldRect) {
+    return worldRect.x + (worldX / worldRect.sourceWidth) * worldRect.width;
+}
+
+function worldToScreenY(worldY, worldRect) {
+    return worldRect.y + (worldY / worldRect.sourceHeight) * worldRect.height;
+}
+
+function worldToScreenWidth(worldWidth, worldRect) {
+    return (worldWidth / worldRect.sourceWidth) * worldRect.width;
+}
+
+function worldToScreenHeight(worldHeight, worldRect) {
+    return (worldHeight / worldRect.sourceHeight) * worldRect.height;
+}
+
+function screenToWorldPoint(screenX, screenY, worldRect) {
+    const clampedX = Math.min(Math.max(screenX, worldRect.x), worldRect.x + worldRect.width);
+    const clampedY = Math.min(Math.max(screenY, worldRect.y), worldRect.y + worldRect.height);
+
+    return {
+        x: ((clampedX - worldRect.x) / worldRect.width) * worldRect.sourceWidth,
+        y: ((clampedY - worldRect.y) / worldRect.height) * worldRect.sourceHeight
+    };
+}
+
+function scaleRectToScreen(rect, worldRect) {
+    return {
+        x: Math.round(worldToScreenX(rect.x, worldRect)),
+        y: Math.round(worldToScreenY(rect.y, worldRect)),
+        width: Math.round(worldToScreenWidth(rect.width, worldRect)),
+        height: Math.round(worldToScreenHeight(rect.height, worldRect))
+    };
+}
+
+function getPlayerWorldSize(frameConfig = getCurrentFrameConfig()) {
+    const spriteSize = getSpriteDimensions(frameConfig.assetKey);
+    return {
+        width: spriteSize.width,
+        height: spriteSize.height
+    };
 }
 
 function getPlayerHitbox(nextX = player.x, nextY = player.y) {
-    const currentAnimation = animations[direction];
-    const currentFrame = currentAnimation[frame] || currentAnimation[IDLE_FRAME];
-    const currentSprite = currentFrame.image;
-    const drawWidth = Math.round(currentSprite.width * PLAYER_SCALE);
-    const drawHeight = Math.round(currentSprite.height * PLAYER_SCALE);
+    const currentFrame = getCurrentFrameConfig();
+    const assetKey = currentFrame.assetKey;
+    const playerSize = getPlayerWorldSize(currentFrame);
+    const controls = spriteControls[assetKey];
+    const hitboxWidth = PLAYER_COLLISION_BASE.width;
+    const hitboxHeight = PLAYER_COLLISION_BASE.height;
 
     return {
-        x: nextX + drawWidth * 0.3,
-        y: nextY + drawHeight * 0.64,
-        width: drawWidth * 0.4,
-        height: drawHeight * 0.28
+        x: nextX + controls.x + (playerSize.width - hitboxWidth) / 2,
+        y: nextY + controls.y + playerSize.height - hitboxHeight,
+        width: hitboxWidth,
+        height: hitboxHeight
     };
 }
 
@@ -171,61 +378,64 @@ function intersects(a, b) {
     );
 }
 
-function canMoveTo(nextX, nextY) {
-    if (!bgImage.complete || !bgImage.naturalWidth) {
-        return true;
-    }
+function expandRect(rect, amount) {
+    return {
+        x: rect.x - amount,
+        y: rect.y - amount,
+        width: rect.width + amount * 2,
+        height: rect.height + amount * 2
+    };
+}
 
-    const bgRect = getBackgroundRect();
+function canMoveTo(nextX, nextY) {
+    const worldRect = getWorldRect();
     const hitbox = getPlayerHitbox(nextX, nextY);
 
     if (
-        hitbox.x < bgRect.x ||
-        hitbox.y < bgRect.y ||
-        hitbox.x + hitbox.width > bgRect.x + bgRect.width ||
-        hitbox.y + hitbox.height > bgRect.y + bgRect.height
+        hitbox.x < 0 ||
+        hitbox.y < 0 ||
+        hitbox.x + hitbox.width > worldRect.sourceWidth ||
+        hitbox.y + hitbox.height > worldRect.sourceHeight
     ) {
         return false;
     }
 
-    return !collisionAreas.some((area) => intersects(hitbox, scaleRect(area, bgRect)));
+    return !collisionAreas.some((area) => intersects(hitbox, expandRect(area, PLAYER_COLLISION_MARGIN)));
 }
 
 function movePlayer(dx, dy) {
     let moved = false;
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy))));
+    const stepX = dx / steps;
+    const stepY = dy / steps;
 
-    if (dx !== 0 && canMoveTo(player.x + dx, player.y)) {
-        player.x += dx;
-        moved = true;
-    }
+    for (let index = 0; index < steps; index++) {
+        if (stepX !== 0 && canMoveTo(player.x + stepX, player.y)) {
+            player.x += stepX;
+            moved = true;
+        }
 
-    if (dy !== 0 && canMoveTo(player.x, player.y + dy)) {
-        player.y += dy;
-        moved = true;
+        if (stepY !== 0 && canMoveTo(player.x, player.y + stepY)) {
+            player.y += stepY;
+            moved = true;
+        }
     }
 
     return moved;
 }
 
 function getCenteredSpawnPosition() {
-    const idleSprite = spriteImages.downIdle;
-
-    if (!bgImage.complete || !bgImage.naturalWidth || !idleSprite.complete || !idleSprite.naturalWidth) {
-        return { x: player.x, y: player.y };
-    }
-
-    const bgRect = getBackgroundRect();
-    const drawWidth = Math.round(idleSprite.width * PLAYER_SCALE);
-    const drawHeight = Math.round(idleSprite.height * PLAYER_SCALE);
-    const preferredX = Math.round(bgRect.x + bgRect.width / 2 - drawWidth / 2);
-    const preferredY = Math.round(bgRect.y + bgRect.height / 2 - drawHeight / 2);
+    const worldRect = getWorldRect();
+    const playerSize = getPlayerWorldSize({ assetKey: "playerDownIdle" });
+    const preferredX = Math.round(worldRect.sourceWidth / 2 - playerSize.width / 2);
+    const preferredY = Math.round(worldRect.sourceHeight / 2 - playerSize.height / 2);
 
     if (canMoveTo(preferredX, preferredY)) {
         return { x: preferredX, y: preferredY };
     }
 
     const step = 8;
-    const maxRadius = Math.ceil(Math.max(bgRect.width, bgRect.height) / step);
+    const maxRadius = Math.ceil(Math.max(worldRect.sourceWidth, worldRect.sourceHeight) / step);
 
     for (let radius = 1; radius <= maxRadius; radius++) {
         for (let offsetY = -radius; offsetY <= radius; offsetY++) {
@@ -253,61 +463,108 @@ function placePlayerAtRoomCenter() {
     player.y = spawn.y;
 }
 
-// 🎹 Teclas
-const keys = {};
+function keepPlayerInsideWorld() {
+    const playerSize = getPlayerWorldSize();
+    const worldRect = getWorldRect();
+    player.x = Math.min(Math.max(player.x, 0), worldRect.sourceWidth - playerSize.width);
+    player.y = Math.min(Math.max(player.y, 0), worldRect.sourceHeight - playerSize.height);
+}
 
-document.addEventListener("keydown", (e) => {
-    const key = e.key.toLowerCase();
+function drawBackground(worldRect) {
+    const background = spriteAssets.background;
+    const controls = spriteControls.background;
+    const sourceWidth = controls.width ?? background.naturalWidth;
+    const sourceHeight = controls.height ?? background.naturalHeight;
 
-    if (["w", "a", "s", "d", "z", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
-        keys[key] = true;
-        if (["w", "a", "s", "d", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
-            target = null;
-        }
-        e.preventDefault();
+    ctx.drawImage(
+        background,
+        controls.x,
+        controls.y,
+        sourceWidth,
+        sourceHeight,
+        worldRect.x,
+        worldRect.y,
+        worldRect.width,
+        worldRect.height
+    );
+}
+
+function drawConfiguredSprite(assetKey, worldRect, flipX = false) {
+    const image = spriteAssets[assetKey];
+    const controls = spriteControls[assetKey];
+    const spriteWidth = controls.width ?? image.naturalWidth;
+    const spriteHeight = controls.height ?? image.naturalHeight;
+    const screenX = Math.round(worldToScreenX(controls.x, worldRect));
+    const screenY = Math.round(worldToScreenY(controls.y, worldRect));
+    const screenWidth = Math.round(worldToScreenWidth(spriteWidth, worldRect));
+    const screenHeight = Math.round(worldToScreenHeight(spriteHeight, worldRect));
+
+    if (flipX) {
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.drawImage(image, -(screenX + screenWidth), screenY, screenWidth, screenHeight);
+        ctx.restore();
+        return;
     }
-});
 
-document.addEventListener("keyup", (e) => {
-    const key = e.key.toLowerCase();
+    ctx.drawImage(image, screenX, screenY, screenWidth, screenHeight);
+}
 
-    if (["w", "a", "s", "d", "z", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
-        keys[key] = false;
-        e.preventDefault();
+function drawPlayer(worldRect) {
+    const currentFrame = getCurrentFrameConfig();
+    const image = spriteAssets[currentFrame.assetKey];
+
+    if (!image.complete || !image.naturalWidth) {
+        return;
     }
-});
 
-// 🖱️ Click para moverse
-let target = null;
+    const controls = spriteControls[currentFrame.assetKey];
+    const spriteWidth = controls.width ?? image.naturalWidth;
+    const spriteHeight = controls.height ?? image.naturalHeight;
+    const screenX = Math.round(worldToScreenX(player.x + controls.x, worldRect));
+    const screenY = Math.round(worldToScreenY(player.y + controls.y, worldRect));
+    const screenWidth = Math.round(worldToScreenWidth(spriteWidth, worldRect));
+    const screenHeight = Math.round(worldToScreenHeight(spriteHeight, worldRect));
 
-canvas.addEventListener("click", (e) => {
-    const rect = canvas.getBoundingClientRect();
-    target = {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top
-    };
-});
+    if (currentFrame.flipX) {
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.drawImage(image, -(screenX + screenWidth), screenY, screenWidth, screenHeight);
+        ctx.restore();
+        return;
+    }
 
-// 🎮 Movimiento WASD
+    ctx.drawImage(image, screenX, screenY, screenWidth, screenHeight);
+}
+
+function draw() {
+    ctx.clearRect(0, 0, viewport.width, viewport.height);
+
+    const worldRect = getWorldRect();
+    drawBackground(worldRect);
+    drawConfiguredSprite("nurseJoy", worldRect);
+    drawPlayer(worldRect);
+}
+
 function moveKeyboard() {
-    const currentSpeed = keys["z"] ? player.runSpeed : player.speed;
+    const currentSpeed = keys.z ? player.runSpeed : player.speed;
 
-    if (keys["w"] || keys["arrowup"]) {
+    if (keys.w || keys.arrowup) {
         direction = "up";
         return movePlayer(0, -currentSpeed);
     }
 
-    if (keys["s"] || keys["arrowdown"]) {
+    if (keys.s || keys.arrowdown) {
         direction = "down";
         return movePlayer(0, currentSpeed);
     }
 
-    if (keys["a"] || keys["arrowleft"]) {
+    if (keys.a || keys.arrowleft) {
         direction = "left";
         return movePlayer(-currentSpeed, 0);
     }
 
-    if (keys["d"] || keys["arrowright"]) {
+    if (keys.d || keys.arrowright) {
         direction = "right";
         return movePlayer(currentSpeed, 0);
     }
@@ -315,115 +572,140 @@ function moveKeyboard() {
     return false;
 }
 
-// 🖱️ Movimiento hacia click
 function moveToTarget() {
-    if (!target) return false;
-
-    let dx = target.x - player.x;
-    let dy = target.y - player.y;
-
-    let dist = Math.hypot(dx, dy);
-
-    if (dist > 2) {
-        const moveX = (dx / dist) * player.speed;
-        const moveY = (dy / dist) * player.speed;
-
-        // Dirección automática
-        if (Math.abs(dx) > Math.abs(dy)) {
-            direction = dx > 0 ? "right" : "left";
-        } else {
-            direction = dy > 0 ? "down" : "up";
-        }
-
-        return movePlayer(moveX, moveY);
+    if (!target) {
+        return false;
     }
 
-    target = null;
-    return false;
+    const dx = target.x - player.x;
+    const dy = target.y - player.y;
+    const distance = Math.hypot(dx, dy);
+
+    if (distance <= 2) {
+        target = null;
+        return false;
+    }
+
+    const moveX = (dx / distance) * player.speed;
+    const moveY = (dy / distance) * player.speed;
+
+    if (Math.abs(dx) > Math.abs(dy)) {
+        direction = dx > 0 ? "right" : "left";
+    } else {
+        direction = dy > 0 ? "down" : "up";
+    }
+
+    return movePlayer(moveX, moveY);
 }
 
-// 🎞️ Animación
 function updateAnimation(isMoving) {
-    if (isMoving) {
-        frameTimer++;
-        if (frameTimer > 10) {
-            const currentAnimation = animations[direction];
-            frame = (frame + 1) % currentAnimation.length;
-            frameTimer = 0;
-        }
-    } else {
+    if (!isMoving) {
         frame = IDLE_FRAME;
+        frameTimer = 0;
+        return;
+    }
+
+    frameTimer += 1;
+
+    if (frameTimer > 10) {
+        const currentAnimation = animations[direction];
+        frame = (frame + 1) % currentAnimation.length;
         frameTimer = 0;
     }
 }
 
-// 🖼️ Dibujar
-function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    if (bgImage.complete) {
-        const bgRect = getBackgroundRect();
-        ctx.drawImage(bgImage, bgRect.x, bgRect.y, bgRect.width, bgRect.height);
-        drawNurseJoy(bgRect);
-    }
-
-    const currentAnimation = animations[direction];
-    const currentFrame = currentAnimation[frame] || currentAnimation[IDLE_FRAME];
-    const currentSprite = currentFrame.image;
-
-    if (!currentSprite || !currentSprite.complete) {
+function tryInteract() {
+    if (!interactionRequested) {
         return;
     }
 
-    const drawWidth = Math.round(currentSprite.width * PLAYER_SCALE);
-    const drawHeight = Math.round(currentSprite.height * PLAYER_SCALE);
-    const drawX = Math.round(player.x);
-    const drawY = Math.round(player.y);
+    interactionRequested = false;
 
-    if (currentFrame.flipX) {
-        ctx.save();
-        ctx.scale(-1, 1);
-        ctx.drawImage(
-            currentSprite,
-            -(drawX + drawWidth),
-            drawY,
-            drawWidth,
-            drawHeight
-        );
-        ctx.restore();
-        return;
-    }
-
-    ctx.drawImage(
-        currentSprite,
-        drawX,
-        drawY,
-        drawWidth,
-        drawHeight
-    );
+    // Punto de entrada para futuras interacciones con NPCs y objetos.
 }
 
-// 🔄 Loop principal
 function gameLoop() {
     const movingKeyboard = moveKeyboard();
     const movingMouse = moveToTarget();
 
+    tryInteract();
     updateAnimation(movingKeyboard || movingMouse);
+    keepPlayerInsideWorld();
     draw();
 
-    requestAnimationFrame(gameLoop);
+    window.requestAnimationFrame(gameLoop);
 }
 
-const allSprites = [bgImage, nurseJoyImage, ...Object.values(spriteImages)];
-let loadedSprites = 0;
+function handleSpriteLoading() {
+    const allSprites = Object.values(spriteAssets);
+    let loadedSprites = 0;
 
-allSprites.forEach((image) => {
-    image.onload = () => {
-        loadedSprites++;
+    function onSpriteReady() {
+        loadedSprites += 1;
 
-        if (loadedSprites === allSprites.length) {
+        if (loadedSprites === allSprites.length && !gameStarted) {
+            cacheSpriteCollisionBounds();
+            gameStarted = true;
             placePlayerAtRoomCenter();
+            draw();
             gameLoop();
         }
-    };
+    }
+
+    allSprites.forEach((image) => {
+        if (image.complete && image.naturalWidth) {
+            onSpriteReady();
+            return;
+        }
+
+        image.addEventListener("load", onSpriteReady, { once: true });
+    });
+}
+
+document.addEventListener("keydown", (event) => {
+    const key = event.key.toLowerCase();
+
+    if (["w", "a", "s", "d", "z", "c", "enter", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
+        keys[key] = true;
+
+        if (["w", "a", "s", "d", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
+            target = null;
+        }
+
+        if (key === "c" || key === "enter") {
+            interactionRequested = true;
+        }
+
+        event.preventDefault();
+    }
 });
+
+document.addEventListener("keyup", (event) => {
+    const key = event.key.toLowerCase();
+
+    if (["w", "a", "s", "d", "z", "c", "enter", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
+        keys[key] = false;
+        event.preventDefault();
+    }
+});
+
+canvas.addEventListener("click", (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const worldRect = getWorldRect();
+    const clickX = event.clientX - rect.left;
+    const clickY = event.clientY - rect.top;
+
+    target = screenToWorldPoint(clickX, clickY, worldRect);
+});
+
+window.addEventListener("resize", () => {
+    resizeCanvas();
+    keepPlayerInsideWorld();
+
+    if (gameStarted) {
+        draw();
+    }
+});
+
+resizeCanvas();
+handleSpriteLoading();
