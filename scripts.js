@@ -11,6 +11,7 @@ const PLAYER_WIDTH = 96;
 const PLAYER_HEIGHT = 114;
 const PLAYER_SPEED = 240;
 const WALK_FRAME_DURATION = 140;
+const CLICK_STOP_DISTANCE = 6;
 
 const viewport = {
     dpr: window.devicePixelRatio || 1,
@@ -40,6 +41,7 @@ let lastFrameTime = 0;
 let direction = "down";
 let frame = 0;
 let frameTimer = 0;
+let target = null;
 const movementKeyOrder = [];
 
 backgroundCtx.imageSmoothingEnabled = false;
@@ -165,6 +167,16 @@ function worldToScreenHeight(worldHeight, worldRect) {
     return (worldHeight / WORLD_HEIGHT) * worldRect.height;
 }
 
+function screenToWorldPoint(screenX, screenY, worldRect) {
+    const clampedX = Math.min(Math.max(screenX, worldRect.x), worldRect.x + worldRect.width);
+    const clampedY = Math.min(Math.max(screenY, worldRect.y), worldRect.y + worldRect.height);
+
+    return {
+        x: ((clampedX - worldRect.x) / worldRect.width) * WORLD_WIDTH,
+        y: ((clampedY - worldRect.y) / worldRect.height) * WORLD_HEIGHT
+    };
+}
+
 function placePlayerAtRoomCenter() {
     player.x = Math.round(WORLD_WIDTH / 2 - PLAYER_WIDTH / 2);
     player.y = Math.round(WORLD_HEIGHT / 2 - PLAYER_HEIGHT / 2);
@@ -232,6 +244,13 @@ function getCurrentFrameConfig() {
     }
 
     return animation.walk[frame - 1] || animation.idle;
+}
+
+function getPlayerAnchor() {
+    return {
+        x: player.x + PLAYER_WIDTH / 2,
+        y: player.y + PLAYER_HEIGHT
+    };
 }
 
 function drawPlayer(worldRect) {
@@ -330,7 +349,20 @@ function clampPlayerToWorld() {
     player.y = Math.min(Math.max(player.y, 0), WORLD_HEIGHT - PLAYER_HEIGHT);
 }
 
-function movePlayer(deltaMs) {
+function updateDirectionFromVector(x, y) {
+    if (x === 0 && y === 0) {
+        return;
+    }
+
+    if (Math.abs(x) > Math.abs(y)) {
+        direction = x > 0 ? "right" : "left";
+        return;
+    }
+
+    direction = y > 0 ? "down" : "up";
+}
+
+function movePlayerByDirection(deltaMs) {
     const activeKey = getActiveMovementKey();
 
     if (!activeKey) {
@@ -362,6 +394,32 @@ function movePlayer(deltaMs) {
     return true;
 }
 
+function moveToTarget(deltaMs) {
+    if (!target) {
+        return false;
+    }
+
+    const anchor = getPlayerAnchor();
+    const dx = target.x - anchor.x;
+    const dy = target.y - anchor.y;
+    const distance = Math.hypot(dx, dy);
+
+    if (distance <= CLICK_STOP_DISTANCE) {
+        target = null;
+        return false;
+    }
+
+    updateDirectionFromVector(dx, dy);
+
+    const stepDistance = Math.min(distance, PLAYER_SPEED * (deltaMs / 1000));
+
+    player.x += (dx / distance) * stepDistance;
+    player.y += (dy / distance) * stepDistance;
+    clampPlayerToWorld();
+
+    return true;
+}
+
 function updateAnimation(isMoving, deltaMs) {
     if (!isMoving) {
         frame = 0;
@@ -386,7 +444,8 @@ function gameLoop(timestamp) {
 
     lastFrameTime = timestamp;
 
-    const isMoving = movePlayer(deltaMs);
+    const isMovingWithKeyboard = movePlayerByDirection(deltaMs);
+    const isMoving = isMovingWithKeyboard || moveToTarget(deltaMs);
     updateAnimation(isMoving, deltaMs);
     draw();
 
@@ -395,6 +454,7 @@ function gameLoop(timestamp) {
 
 function clearMovementInput() {
     movementKeyOrder.length = 0;
+    target = null;
     frame = 0;
     frameTimer = 0;
 }
@@ -408,6 +468,7 @@ function handleKeyDown(event) {
 
     if (!event.repeat) {
         registerMovementKey(key);
+        target = null;
 
         const activeKey = getActiveMovementKey();
 
@@ -455,6 +516,22 @@ window.addEventListener("resize", () => {
 
 window.addEventListener("pointerdown", () => {
     gameCanvas.focus();
+});
+
+gameCanvas.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+        return;
+    }
+
+    const rect = gameCanvas.getBoundingClientRect();
+    const worldRect = getWorldRect();
+    const clickX = event.clientX - rect.left;
+    const clickY = event.clientY - rect.top;
+
+    target = screenToWorldPoint(clickX, clickY, worldRect);
+    const anchor = getPlayerAnchor();
+    updateDirectionFromVector(target.x - anchor.x, target.y - anchor.y);
+    event.preventDefault();
 });
 
 window.addEventListener("blur", () => {
