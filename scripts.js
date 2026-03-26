@@ -9,9 +9,12 @@ const WORLD_WIDTH = 1920;
 const WORLD_HEIGHT = 1080;
 const PLAYER_WIDTH = 96;
 const PLAYER_HEIGHT = 114;
+const PLAYER_HITBOX_OFFSET_Y = PLAYER_HEIGHT / 2;
+const PLAYER_HITBOX_HEIGHT = PLAYER_HEIGHT / 2;
 const PLAYER_SPEED = 240;
 const WALK_FRAME_DURATION = 140;
 const CLICK_STOP_DISTANCE = 6;
+const SHOW_COLLISION_DEBUG = true;
 
 const viewport = {
     dpr: window.devicePixelRatio || 1,
@@ -34,6 +37,17 @@ const npc = {
         height: 96
     }
 };
+
+const collisionRects = [
+    { x: 1418, y: 78, width: 119, height: 225 },
+    { x: 329, y: 93, width: 119, height: 4 },
+    { x: 1574, y: 100, width: 186, height: 143 },
+    { x: 268, y: 104, width: 241, height: 203 },
+    { x: 902, y: 336, width: 116, height: 123 },
+    { x: 365, y: 696, width: 83, height: 1 },
+    { x: 268, y: 707, width: 241, height: 214 },
+    { x: 1418, y: 707, width: 247, height: 204 }
+];
 
 let backgroundDirty = true;
 let previousRenderState = "";
@@ -96,14 +110,22 @@ const animations = {
     }
 };
 
+function handleAssetReady(image) {
+    if (image === assets.background) {
+        backgroundDirty = true;
+    }
+
+    draw(true);
+}
+
 Object.values(assets).forEach((image) => {
     image.addEventListener("load", () => {
-        if (image === assets.background) {
-            backgroundDirty = true;
-        }
-
-        draw(true);
+        handleAssetReady(image);
     });
+
+    if (image.complete && image.naturalWidth) {
+        handleAssetReady(image);
+    }
 });
 
 function resizeCanvas() {
@@ -177,9 +199,75 @@ function screenToWorldPoint(screenX, screenY, worldRect) {
     };
 }
 
+function getPlayerHitbox(nextX = player.x, nextY = player.y) {
+    return {
+        x: nextX,
+        y: nextY + PLAYER_HITBOX_OFFSET_Y,
+        width: PLAYER_WIDTH,
+        height: PLAYER_HITBOX_HEIGHT
+    };
+}
+
+function rectanglesOverlap(rectA, rectB) {
+    return (
+        rectA.x < rectB.x + rectB.width &&
+        rectA.x + rectA.width > rectB.x &&
+        rectA.y < rectB.y + rectB.height &&
+        rectA.y + rectA.height > rectB.y
+    );
+}
+
+function collidesWithObstacle(hitbox) {
+    return collisionRects.some((obstacle) => rectanglesOverlap(hitbox, obstacle));
+}
+
+function canMoveTo(nextX, nextY) {
+    if (
+        nextX < 0 ||
+        nextY < 0 ||
+        nextX + PLAYER_WIDTH > WORLD_WIDTH ||
+        nextY + PLAYER_HEIGHT > WORLD_HEIGHT
+    ) {
+        return false;
+    }
+
+    return !collidesWithObstacle(getPlayerHitbox(nextX, nextY));
+}
+
 function placePlayerAtRoomCenter() {
-    player.x = Math.round(WORLD_WIDTH / 2 - PLAYER_WIDTH / 2);
-    player.y = Math.round(WORLD_HEIGHT / 2 - PLAYER_HEIGHT / 2);
+    const preferredX = Math.round(WORLD_WIDTH / 2 - PLAYER_WIDTH / 2);
+    const preferredY = Math.round(WORLD_HEIGHT / 2 - PLAYER_HEIGHT / 2);
+
+    if (canMoveTo(preferredX, preferredY)) {
+        player.x = preferredX;
+        player.y = preferredY;
+        return;
+    }
+
+    const step = 8;
+    const maxRadius = Math.ceil(Math.max(WORLD_WIDTH, WORLD_HEIGHT) / step);
+
+    for (let radius = 1; radius <= maxRadius; radius++) {
+        for (let offsetY = -radius; offsetY <= radius; offsetY++) {
+            for (let offsetX = -radius; offsetX <= radius; offsetX++) {
+                if (Math.abs(offsetX) !== radius && Math.abs(offsetY) !== radius) {
+                    continue;
+                }
+
+                const candidateX = preferredX + offsetX * step;
+                const candidateY = preferredY + offsetY * step;
+
+                if (canMoveTo(candidateX, candidateY)) {
+                    player.x = candidateX;
+                    player.y = candidateY;
+                    return;
+                }
+            }
+        }
+    }
+
+    player.x = preferredX;
+    player.y = preferredY;
 }
 
 function drawBackground(worldRect) {
@@ -278,6 +366,52 @@ function drawPlayer(worldRect) {
     ctx.drawImage(image, screenX, screenY, screenWidth, screenHeight);
 }
 
+function drawCollisionDebug(worldRect) {
+    if (!SHOW_COLLISION_DEBUG) {
+        return;
+    }
+
+    ctx.save();
+    ctx.lineWidth = 1;
+
+    collisionRects.forEach((obstacle) => {
+        const screenX = Math.round(worldToScreenX(obstacle.x, worldRect));
+        const screenY = Math.round(worldToScreenY(obstacle.y, worldRect));
+        const screenWidth = Math.max(1, Math.round(worldToScreenWidth(obstacle.width, worldRect)));
+        const screenHeight = Math.max(1, Math.round(worldToScreenHeight(obstacle.height, worldRect)));
+
+        ctx.fillStyle = "rgba(255, 80, 80, 0.18)";
+        ctx.strokeStyle = "rgba(255, 80, 80, 0.95)";
+        ctx.fillRect(screenX, screenY, screenWidth, screenHeight);
+        ctx.strokeRect(screenX + 0.5, screenY + 0.5, Math.max(0, screenWidth - 1), Math.max(0, screenHeight - 1));
+    });
+
+    const playerHitbox = getPlayerHitbox();
+    const playerScreenX = Math.round(worldToScreenX(playerHitbox.x, worldRect));
+    const playerScreenY = Math.round(worldToScreenY(playerHitbox.y, worldRect));
+    const playerScreenWidth = Math.max(1, Math.round(worldToScreenWidth(playerHitbox.width, worldRect)));
+    const playerScreenHeight = Math.max(1, Math.round(worldToScreenHeight(playerHitbox.height, worldRect)));
+
+    ctx.strokeStyle = "rgba(0, 255, 160, 0.95)";
+    ctx.strokeRect(
+        playerScreenX + 0.5,
+        playerScreenY + 0.5,
+        Math.max(0, playerScreenWidth - 1),
+        Math.max(0, playerScreenHeight - 1)
+    );
+
+    ctx.fillStyle = "rgba(8, 12, 18, 0.8)";
+    ctx.fillRect(worldRect.x + 12, worldRect.y + 12, 220, 56);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "12px monospace";
+    ctx.textBaseline = "top";
+    ctx.fillText(`Hitboxes: ${collisionRects.length}`, worldRect.x + 20, worldRect.y + 20);
+    ctx.fillText(`Player: ${Math.round(player.x)}, ${Math.round(player.y)}`, worldRect.x + 20, worldRect.y + 34);
+    ctx.fillText("Source: HsLD baked", worldRect.x + 20, worldRect.y + 48);
+
+    ctx.restore();
+}
+
 function getRenderState() {
     return [
         Math.round(player.x * 100) / 100,
@@ -304,6 +438,7 @@ function draw(force = false) {
     ctx.clearRect(0, 0, viewport.width, viewport.height);
     drawNpc(worldRect);
     drawPlayer(worldRect);
+    drawCollisionDebug(worldRect);
     previousRenderState = renderState;
 }
 
@@ -344,9 +479,25 @@ function unregisterMovementKey(key) {
     }
 }
 
-function clampPlayerToWorld() {
-    player.x = Math.min(Math.max(player.x, 0), WORLD_WIDTH - PLAYER_WIDTH);
-    player.y = Math.min(Math.max(player.y, 0), WORLD_HEIGHT - PLAYER_HEIGHT);
+function movePlayerBy(dx, dy) {
+    let moved = false;
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy))));
+    const stepX = dx / steps;
+    const stepY = dy / steps;
+
+    for (let index = 0; index < steps; index++) {
+        if (stepX !== 0 && canMoveTo(player.x + stepX, player.y)) {
+            player.x += stepX;
+            moved = true;
+        }
+
+        if (stepY !== 0 && canMoveTo(player.x, player.y + stepY)) {
+            player.y += stepY;
+            moved = true;
+        }
+    }
+
+    return moved;
 }
 
 function updateDirectionFromVector(x, y) {
@@ -375,23 +526,16 @@ function movePlayerByDirection(deltaMs) {
 
     switch (direction) {
         case "up":
-            player.y -= distance;
-            break;
+            return movePlayerBy(0, -distance);
         case "down":
-            player.y += distance;
-            break;
+            return movePlayerBy(0, distance);
         case "left":
-            player.x -= distance;
-            break;
+            return movePlayerBy(-distance, 0);
         case "right":
-            player.x += distance;
-            break;
+            return movePlayerBy(distance, 0);
         default:
             return false;
     }
-
-    clampPlayerToWorld();
-    return true;
 }
 
 function moveToTarget(deltaMs) {
@@ -413,11 +557,13 @@ function moveToTarget(deltaMs) {
 
     const stepDistance = Math.min(distance, PLAYER_SPEED * (deltaMs / 1000));
 
-    player.x += (dx / distance) * stepDistance;
-    player.y += (dy / distance) * stepDistance;
-    clampPlayerToWorld();
+    const moved = movePlayerBy((dx / distance) * stepDistance, (dy / distance) * stepDistance);
 
-    return true;
+    if (!moved) {
+        target = null;
+    }
+
+    return moved;
 }
 
 function updateAnimation(isMoving, deltaMs) {
