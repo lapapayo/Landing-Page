@@ -10,14 +10,22 @@ html, body {
 }
  
 body {
-  background: #000;
+  position: relative;
+  background-color: #000000;
+  background-image: url("bg.png");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 90% 100%;
   overflow: hidden;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   touch-action: manipulation;
 }
 
+#backgroundCanvas,
 #gameCanvas {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100vw;
   height: 100vh;
@@ -25,6 +33,15 @@ body {
   max-height: 100%;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+}
+
+#backgroundCanvas {
+  display: none;
+}
+
+#gameCanvas {
+  z-index: 3;
+  background: transparent;
   touch-action: none;
 }
  

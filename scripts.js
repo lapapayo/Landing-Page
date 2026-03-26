@@ -1,5 +1,21 @@
-const canvas = document.getElementById("gameCanvas");
-const ctx = canvas.getContext("2d");
+const backgroundCanvas = document.getElementById("backgroundCanvas");
+const backgroundCtx = backgroundCanvas.getContext("2d");
+const gameCanvas = document.getElementById("gameCanvas");
+const ctx = gameCanvas.getContext("2d");
+
+gameCanvas.tabIndex = 0;
+
+const WORLD_WIDTH = 1920;
+const WORLD_HEIGHT = 1080;
+const WORLD_STEP = 4;
+const WORLD_RUN_STEP = 7;
+const PLAYER_WIDTH = 96;
+const PLAYER_HEIGHT = 114;
+const PLAYER_FOOT_HITBOX = {
+    width: 16,
+    height: 8
+};
+const COLLISION_ALPHA_THRESHOLD = 16;
 
 const viewport = {
     dpr: window.devicePixelRatio || 1,
@@ -9,22 +25,20 @@ const viewport = {
 
 const keys = {};
 let target = null;
+let direction = "down";
 let frame = 0;
 let frameTimer = 0;
-let direction = "down";
-let gameStarted = false;
 let interactionRequested = false;
-const spriteCollisionBounds = {};
+let collisionMaskData = null;
 
-const IDLE_FRAME = 0;
-const WORLD_STEP = 2;
-const WORLD_RUN_STEP = 4;
-const PLAYER_COLLISION_MARGIN = 8;
-const PLAYER_COLLISION_BASE = {
-    width: 16,
-    height: 19
+const player = {
+    x: 0,
+    y: 0,
+    speed: WORLD_STEP,
+    runSpeed: WORLD_RUN_STEP
 };
 
+backgroundCtx.imageSmoothingEnabled = false;
 ctx.imageSmoothingEnabled = false;
 
 function loadSprite(src) {
@@ -33,8 +47,9 @@ function loadSprite(src) {
     return image;
 }
 
-const spriteAssets = {
+const assets = {
     background: loadSprite("bg.png"),
+    collisionMask: loadSprite("HsBG/HsLD.png"),
     nurseJoy: loadSprite("Spritesnpcs/joynurses.png"),
     playerDownIdle: loadSprite("Spritesheet/abajoquieto.png"),
     playerDownWalk1: loadSprite("Spritesheet/abajoandando1.png"),
@@ -45,123 +60,11 @@ const spriteAssets = {
     playerLeftWalk2: loadSprite("Spritesheet/izquierdandando2.png")
 };
 
-const spriteControls = {
-    background: {
-        x: 0,
-        y: 0,
-        width: null,
-        height: null
-    },
-    nurseJoy: {
-        x: 720,
-        y: 192,
-        width: 112,
-        height: 114
-    },
-    playerDownIdle: {
-        x: 0,
-        y: 0,
-        width: 96,
-        height: 120
-    },
-    playerDownWalk1: {
-        x: 0,
-        y: 0,
-        width: 96,
-        height: 126
-    },
-    playerUpIdle: {
-        x: 0,
-        y: 0,
-        width: 96,
-        height: 126
-    },
-    playerUpWalk1: {
-        x: 0,
-        y: 0,
-        width: 96,
-        height: 126
-    },
-    playerLeftIdle: {
-        x: 0,
-        y: 0,
-        width: 102,
-        height: 126
-    },
-    playerLeftWalk1: {
-        x: 0,
-        y: 0,
-        width: 108,
-        height: 126
-    },
-    playerLeftWalk2: {
-        x: 0,
-        y: 0,
-        width: 108,
-        height: 126
-    }
-};
-
-window.spriteControls = spriteControls;
-
-function insetRect(rect, insetLeft = 0, insetTop = 0, insetRight = insetLeft, insetBottom = insetTop) {
-    return {
-        x: rect.x + insetLeft,
-        y: rect.y + insetTop,
-        width: rect.width - insetLeft - insetRight,
-        height: rect.height - insetTop - insetBottom
-    };
-}
-
-const collisionSpriteInstances = [
-    { type: "armario", x: 88, y: 89, width: 325, height: 188 },
-    { type: "pc", x: 1166, y: 70, width: 146, height: 210 },
-    { type: "mesa", x: 401, y: 270, width: 92, height: 91 },
-    { type: "mesa", x: 1049, y: 271, width: 92, height: 91 },
-    { type: "mesa", x: 252, y: 660, width: 116, height: 62 },
-    { type: "pc", x: 252, y: 722, width: 44, height: 131 },
-    { type: "pc", x: 324, y: 722, width: 44, height: 131 },
-    { type: "mesa", x: 1165, y: 661, width: 115, height: 62 },
-    { type: "pc", x: 1165, y: 723, width: 44, height: 130 },
-    { type: "pc", x: 1236, y: 723, width: 44, height: 130 }
-];
-
-const mostradorCollisionAreas = [
-    { x: 731, y: 275, width: 97, height: 156 }
-];
-
-function getInstanceCollisionRect(instance) {
-    if (instance.type === "mesa") {
-        return insetRect(instance, 22, 18, 22, 24);
-    }
-
-    if (instance.type === "pc") {
-        return insetRect(instance, 10, 10, 10, 16);
-    }
-
-    if (instance.type === "armario") {
-        return insetRect(instance, 22, 18, 22, 24);
-    }
-
-    return {
-        x: instance.x,
-        y: instance.y,
-        width: instance.width,
-        height: instance.height
-    };
-}
-
-const collisionAreas = [
-    ...mostradorCollisionAreas,
-    ...collisionSpriteInstances.map((instance) => getInstanceCollisionRect(instance))
-];
-
-const player = {
-    x: 0,
-    y: 0,
-    speed: WORLD_STEP,
-    runSpeed: WORLD_RUN_STEP
-};
+Object.values(assets).forEach((image) => {
+    image.addEventListener("load", () => {
+        draw();
+    });
+});
 
 const animations = {
     down: [
@@ -186,36 +89,46 @@ const animations = {
     ]
 };
 
+const npc = {
+    joy: {
+        x: 840,
+        y: 138,
+        width: 72,
+        height: 96
+    }
+};
+
+assets.collisionMask.addEventListener("load", cacheCollisionMaskData);
+
 function resizeCanvas() {
     viewport.dpr = window.devicePixelRatio || 1;
     viewport.width = window.innerWidth;
     viewport.height = window.innerHeight;
 
-    canvas.width = Math.floor(viewport.width * viewport.dpr);
-    canvas.height = Math.floor(viewport.height * viewport.dpr);
-    canvas.style.width = `${viewport.width}px`;
-    canvas.style.height = `${viewport.height}px`;
+    backgroundCanvas.width = Math.floor(viewport.width * viewport.dpr);
+    backgroundCanvas.height = Math.floor(viewport.height * viewport.dpr);
+    backgroundCanvas.style.width = `${viewport.width}px`;
+    backgroundCanvas.style.height = `${viewport.height}px`;
 
+    gameCanvas.width = Math.floor(viewport.width * viewport.dpr);
+    gameCanvas.height = Math.floor(viewport.height * viewport.dpr);
+    gameCanvas.style.width = `${viewport.width}px`;
+    gameCanvas.style.height = `${viewport.height}px`;
+
+    backgroundCtx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+    backgroundCtx.imageSmoothingEnabled = false;
     ctx.imageSmoothingEnabled = false;
 }
 
-function getCurrentFrameConfig() {
-    const currentAnimation = animations[direction];
-    return currentAnimation[frame] || currentAnimation[IDLE_FRAME];
-}
+function cacheCollisionMaskData() {
+    const image = assets.collisionMask;
 
-function getSpriteDimensions(assetKey) {
-    const image = spriteAssets[assetKey];
-    const controls = spriteControls[assetKey];
+    if (!image.complete || !image.naturalWidth) {
+        collisionMaskData = null;
+        return;
+    }
 
-    return {
-        width: controls.width ?? image.naturalWidth,
-        height: controls.height ?? image.naturalHeight
-    };
-}
-
-function computeOpaqueBounds(image) {
     try {
         const buffer = document.createElement("canvas");
         const bufferCtx = buffer.getContext("2d", { willReadFrequently: true });
@@ -224,69 +137,15 @@ function computeOpaqueBounds(image) {
         buffer.height = image.naturalHeight;
         bufferCtx.clearRect(0, 0, buffer.width, buffer.height);
         bufferCtx.drawImage(image, 0, 0);
-
-        const { data, width, height } = bufferCtx.getImageData(0, 0, buffer.width, buffer.height);
-        let minX = width;
-        let minY = height;
-        let maxX = -1;
-        let maxY = -1;
-
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const alpha = data[(y * width + x) * 4 + 3];
-
-                if (alpha === 0) {
-                    continue;
-                }
-
-                minX = Math.min(minX, x);
-                minY = Math.min(minY, y);
-                maxX = Math.max(maxX, x);
-                maxY = Math.max(maxY, y);
-            }
-        }
-
-        if (maxX === -1) {
-            return {
-                x: 0,
-                y: 0,
-                width,
-                height
-            };
-        }
-
-        return {
-            x: minX,
-            y: minY,
-            width: maxX - minX + 1,
-            height: maxY - minY + 1
-        };
+        collisionMaskData = bufferCtx.getImageData(0, 0, buffer.width, buffer.height);
     } catch (error) {
-        return {
-            x: 0,
-            y: 0,
-            width: image.naturalWidth,
-            height: image.naturalHeight
-        };
+        console.error("No se pudo leer la mascara de colision HsLD.png:", error);
+        collisionMaskData = null;
     }
 }
 
-function cacheSpriteCollisionBounds() {
-    Object.entries(spriteAssets).forEach(([assetKey, image]) => {
-        if (!image.complete || !image.naturalWidth || assetKey === "background" || assetKey === "nurseJoy") {
-            return;
-        }
-
-        spriteCollisionBounds[assetKey] = computeOpaqueBounds(image);
-    });
-}
-
 function getWorldRect() {
-    const background = spriteAssets.background;
-    const controls = spriteControls.background;
-    const sourceWidth = controls.width ?? background.naturalWidth;
-    const sourceHeight = controls.height ?? background.naturalHeight;
-    const worldRatio = sourceWidth / sourceHeight;
+    const worldRatio = WORLD_WIDTH / WORLD_HEIGHT;
     const viewportRatio = viewport.width / viewport.height;
 
     let width;
@@ -304,26 +163,24 @@ function getWorldRect() {
         x: Math.round((viewport.width - width) / 2),
         y: Math.round((viewport.height - height) / 2),
         width: Math.round(width),
-        height: Math.round(height),
-        sourceWidth,
-        sourceHeight
+        height: Math.round(height)
     };
 }
 
 function worldToScreenX(worldX, worldRect) {
-    return worldRect.x + (worldX / worldRect.sourceWidth) * worldRect.width;
+    return worldRect.x + (worldX / WORLD_WIDTH) * worldRect.width;
 }
 
 function worldToScreenY(worldY, worldRect) {
-    return worldRect.y + (worldY / worldRect.sourceHeight) * worldRect.height;
+    return worldRect.y + (worldY / WORLD_HEIGHT) * worldRect.height;
 }
 
 function worldToScreenWidth(worldWidth, worldRect) {
-    return (worldWidth / worldRect.sourceWidth) * worldRect.width;
+    return (worldWidth / WORLD_WIDTH) * worldRect.width;
 }
 
 function worldToScreenHeight(worldHeight, worldRect) {
-    return (worldHeight / worldRect.sourceHeight) * worldRect.height;
+    return (worldHeight / WORLD_HEIGHT) * worldRect.height;
 }
 
 function screenToWorldPoint(screenX, screenY, worldRect) {
@@ -331,76 +188,72 @@ function screenToWorldPoint(screenX, screenY, worldRect) {
     const clampedY = Math.min(Math.max(screenY, worldRect.y), worldRect.y + worldRect.height);
 
     return {
-        x: ((clampedX - worldRect.x) / worldRect.width) * worldRect.sourceWidth,
-        y: ((clampedY - worldRect.y) / worldRect.height) * worldRect.sourceHeight
+        x: ((clampedX - worldRect.x) / worldRect.width) * WORLD_WIDTH,
+        y: ((clampedY - worldRect.y) / worldRect.height) * WORLD_HEIGHT
     };
 }
 
-function scaleRectToScreen(rect, worldRect) {
+function getCurrentFrameConfig() {
+    const currentAnimation = animations[direction];
+    return currentAnimation[frame] || currentAnimation[0];
+}
+
+function getPlayerFootHitbox(nextX = player.x, nextY = player.y) {
     return {
-        x: Math.round(worldToScreenX(rect.x, worldRect)),
-        y: Math.round(worldToScreenY(rect.y, worldRect)),
-        width: Math.round(worldToScreenWidth(rect.width, worldRect)),
-        height: Math.round(worldToScreenHeight(rect.height, worldRect))
+        x: nextX + (PLAYER_WIDTH - PLAYER_FOOT_HITBOX.width) / 2,
+        y: nextY + PLAYER_HEIGHT - PLAYER_FOOT_HITBOX.height,
+        width: PLAYER_FOOT_HITBOX.width,
+        height: PLAYER_FOOT_HITBOX.height
     };
 }
 
-function getPlayerWorldSize(frameConfig = getCurrentFrameConfig()) {
-    const spriteSize = getSpriteDimensions(frameConfig.assetKey);
-    return {
-        width: spriteSize.width,
-        height: spriteSize.height
-    };
+function isCollisionPixelSolid(worldX, worldY) {
+    if (!collisionMaskData) {
+        return false;
+    }
+
+    const x = Math.floor(worldX);
+    const y = Math.floor(worldY);
+
+    if (x < 0 || y < 0 || x >= collisionMaskData.width || y >= collisionMaskData.height) {
+        return true;
+    }
+
+    const alpha = collisionMaskData.data[(y * collisionMaskData.width + x) * 4 + 3];
+    return alpha >= COLLISION_ALPHA_THRESHOLD;
 }
 
-function getPlayerHitbox(nextX = player.x, nextY = player.y) {
-    const currentFrame = getCurrentFrameConfig();
-    const assetKey = currentFrame.assetKey;
-    const playerSize = getPlayerWorldSize(currentFrame);
-    const controls = spriteControls[assetKey];
-    const hitboxWidth = PLAYER_COLLISION_BASE.width;
-    const hitboxHeight = PLAYER_COLLISION_BASE.height;
+function footHitboxTouchesCollisionMask(hitbox) {
+    const left = Math.floor(hitbox.x) + 1;
+    const center = Math.floor(hitbox.x + hitbox.width / 2);
+    const right = Math.ceil(hitbox.x + hitbox.width) - 2;
+    const bottom = Math.ceil(hitbox.y + hitbox.height) - 1;
+    const upper = Math.floor(hitbox.y + 1);
 
-    return {
-        x: nextX + controls.x + (playerSize.width - hitboxWidth) / 2,
-        y: nextY + controls.y + playerSize.height - hitboxHeight,
-        width: hitboxWidth,
-        height: hitboxHeight
-    };
-}
-
-function intersects(a, b) {
     return (
-        a.x < b.x + b.width &&
-        a.x + a.width > b.x &&
-        a.y < b.y + b.height &&
-        a.y + a.height > b.y
+        isCollisionPixelSolid(left, bottom) ||
+        isCollisionPixelSolid(center, bottom) ||
+        isCollisionPixelSolid(right, bottom) ||
+        isCollisionPixelSolid(left, upper) ||
+        isCollisionPixelSolid(right, upper)
     );
 }
 
-function expandRect(rect, amount) {
-    return {
-        x: rect.x - amount,
-        y: rect.y - amount,
-        width: rect.width + amount * 2,
-        height: rect.height + amount * 2
-    };
-}
-
 function canMoveTo(nextX, nextY) {
-    const worldRect = getWorldRect();
-    const hitbox = getPlayerHitbox(nextX, nextY);
+    if (!collisionMaskData && assets.collisionMask.complete && assets.collisionMask.naturalWidth) {
+        cacheCollisionMaskData();
+    }
 
     if (
-        hitbox.x < 0 ||
-        hitbox.y < 0 ||
-        hitbox.x + hitbox.width > worldRect.sourceWidth ||
-        hitbox.y + hitbox.height > worldRect.sourceHeight
+        nextX < 0 ||
+        nextY < 0 ||
+        nextX + PLAYER_WIDTH > WORLD_WIDTH ||
+        nextY + PLAYER_HEIGHT > WORLD_HEIGHT
     ) {
         return false;
     }
 
-    return !collisionAreas.some((area) => intersects(hitbox, expandRect(area, PLAYER_COLLISION_MARGIN)));
+    return !footHitboxTouchesCollisionMask(getPlayerFootHitbox(nextX, nextY));
 }
 
 function movePlayer(dx, dy) {
@@ -425,17 +278,15 @@ function movePlayer(dx, dy) {
 }
 
 function getCenteredSpawnPosition() {
-    const worldRect = getWorldRect();
-    const playerSize = getPlayerWorldSize({ assetKey: "playerDownIdle" });
-    const preferredX = Math.round(worldRect.sourceWidth / 2 - playerSize.width / 2);
-    const preferredY = Math.round(worldRect.sourceHeight / 2 - playerSize.height / 2);
+    const preferredX = Math.round(WORLD_WIDTH / 2 - PLAYER_WIDTH / 2);
+    const preferredY = Math.round(WORLD_HEIGHT / 2 - PLAYER_HEIGHT / 2);
 
     if (canMoveTo(preferredX, preferredY)) {
         return { x: preferredX, y: preferredY };
     }
 
     const step = 8;
-    const maxRadius = Math.ceil(Math.max(worldRect.sourceWidth, worldRect.sourceHeight) / step);
+    const maxRadius = Math.ceil(Math.max(WORLD_WIDTH, WORLD_HEIGHT) / step);
 
     for (let radius = 1; radius <= maxRadius; radius++) {
         for (let offsetY = -radius; offsetY <= radius; offsetY++) {
@@ -463,68 +314,77 @@ function placePlayerAtRoomCenter() {
     player.y = spawn.y;
 }
 
-function keepPlayerInsideWorld() {
-    const playerSize = getPlayerWorldSize();
-    const worldRect = getWorldRect();
-    player.x = Math.min(Math.max(player.x, 0), worldRect.sourceWidth - playerSize.width);
-    player.y = Math.min(Math.max(player.y, 0), worldRect.sourceHeight - playerSize.height);
-}
-
 function drawBackground(worldRect) {
-    const background = spriteAssets.background;
-    const controls = spriteControls.background;
-    const sourceWidth = controls.width ?? background.naturalWidth;
-    const sourceHeight = controls.height ?? background.naturalHeight;
-
-    ctx.drawImage(
-        background,
-        controls.x,
-        controls.y,
-        sourceWidth,
-        sourceHeight,
-        worldRect.x,
-        worldRect.y,
-        worldRect.width,
-        worldRect.height
-    );
+    return;
 }
 
-function drawConfiguredSprite(assetKey, worldRect, flipX = false) {
-    const image = spriteAssets[assetKey];
-    const controls = spriteControls[assetKey];
-    const spriteWidth = controls.width ?? image.naturalWidth;
-    const spriteHeight = controls.height ?? image.naturalHeight;
-    const screenX = Math.round(worldToScreenX(controls.x, worldRect));
-    const screenY = Math.round(worldToScreenY(controls.y, worldRect));
-    const screenWidth = Math.round(worldToScreenWidth(spriteWidth, worldRect));
-    const screenHeight = Math.round(worldToScreenHeight(spriteHeight, worldRect));
+function drawNpc(worldRect) {
+    const joy = npc.joy;
 
-    if (flipX) {
-        ctx.save();
-        ctx.scale(-1, 1);
-        ctx.drawImage(image, -(screenX + screenWidth), screenY, screenWidth, screenHeight);
-        ctx.restore();
+    if (!assets.nurseJoy.complete || !assets.nurseJoy.naturalWidth) {
         return;
     }
 
-    ctx.drawImage(image, screenX, screenY, screenWidth, screenHeight);
+    const screenX = Math.round(worldToScreenX(joy.x, worldRect));
+    const screenY = Math.round(worldToScreenY(joy.y, worldRect));
+    const screenWidth = Math.round(worldToScreenWidth(joy.width, worldRect));
+    const screenHeight = Math.round(worldToScreenHeight(joy.height, worldRect));
+
+    ctx.drawImage(assets.nurseJoy, screenX, screenY, screenWidth, screenHeight);
+}
+
+function drawPlayerFallback(worldRect) {
+    const screenX = Math.round(worldToScreenX(player.x, worldRect));
+    const screenY = Math.round(worldToScreenY(player.y, worldRect));
+    const screenWidth = Math.round(worldToScreenWidth(PLAYER_WIDTH, worldRect));
+    const screenHeight = Math.round(worldToScreenHeight(PLAYER_HEIGHT, worldRect));
+    const headSize = Math.max(8, Math.round(screenWidth * 0.35));
+    const bodyWidth = Math.max(10, Math.round(screenWidth * 0.42));
+    const bodyHeight = Math.max(16, Math.round(screenHeight * 0.38));
+    const headX = Math.round(screenX + (screenWidth - headSize) / 2);
+    const headY = Math.round(screenY + 6);
+    const bodyX = Math.round(screenX + (screenWidth - bodyWidth) / 2);
+    const bodyY = headY + headSize - 2;
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
+    ctx.beginPath();
+    ctx.ellipse(
+        Math.round(screenX + screenWidth / 2),
+        Math.round(screenY + screenHeight - 4),
+        Math.max(10, Math.round(screenWidth * 0.22)),
+        Math.max(4, Math.round(screenHeight * 0.06)),
+        0,
+        0,
+        Math.PI * 2
+    );
+    ctx.fill();
+
+    ctx.fillStyle = "#2b2b2b";
+    ctx.fillRect(bodyX - 2, bodyY - 2, bodyWidth + 4, bodyHeight + 4);
+    ctx.fillRect(headX - 2, headY - 2, headSize + 4, headSize + 4);
+
+    ctx.fillStyle = "#f2c094";
+    ctx.fillRect(headX, headY, headSize, headSize);
+    ctx.fillStyle = "#cf3f3f";
+    ctx.fillRect(bodyX, bodyY, bodyWidth, bodyHeight);
+    ctx.fillStyle = "#2755d8";
+    ctx.fillRect(bodyX + 2, bodyY + bodyHeight, Math.round(bodyWidth / 2) - 3, Math.max(10, Math.round(screenHeight * 0.18)));
+    ctx.fillRect(bodyX + Math.round(bodyWidth / 2) + 1, bodyY + bodyHeight, Math.round(bodyWidth / 2) - 3, Math.max(10, Math.round(screenHeight * 0.18)));
 }
 
 function drawPlayer(worldRect) {
     const currentFrame = getCurrentFrameConfig();
-    const image = spriteAssets[currentFrame.assetKey];
+    const image = assets[currentFrame.assetKey];
 
     if (!image.complete || !image.naturalWidth) {
+        drawPlayerFallback(worldRect);
         return;
     }
 
-    const controls = spriteControls[currentFrame.assetKey];
-    const spriteWidth = controls.width ?? image.naturalWidth;
-    const spriteHeight = controls.height ?? image.naturalHeight;
-    const screenX = Math.round(worldToScreenX(player.x + controls.x, worldRect));
-    const screenY = Math.round(worldToScreenY(player.y + controls.y, worldRect));
-    const screenWidth = Math.round(worldToScreenWidth(spriteWidth, worldRect));
-    const screenHeight = Math.round(worldToScreenHeight(spriteHeight, worldRect));
+    const screenX = Math.round(worldToScreenX(player.x, worldRect));
+    const screenY = Math.round(worldToScreenY(player.y, worldRect));
+    const screenWidth = Math.round(worldToScreenWidth(PLAYER_WIDTH, worldRect));
+    const screenHeight = Math.round(worldToScreenHeight(PLAYER_HEIGHT, worldRect));
 
     if (currentFrame.flipX) {
         ctx.save();
@@ -542,7 +402,7 @@ function draw() {
 
     const worldRect = getWorldRect();
     drawBackground(worldRect);
-    drawConfiguredSprite("nurseJoy", worldRect);
+    drawNpc(worldRect);
     drawPlayer(worldRect);
 }
 
@@ -620,8 +480,6 @@ function tryInteract() {
     }
 
     interactionRequested = false;
-
-    // Punto de entrada para futuras interacciones con NPCs y objetos.
 }
 
 function gameLoop() {
@@ -630,39 +488,20 @@ function gameLoop() {
 
     tryInteract();
     updateAnimation(movingKeyboard || movingMouse);
-    keepPlayerInsideWorld();
     draw();
 
     window.requestAnimationFrame(gameLoop);
 }
 
-function handleSpriteLoading() {
-    const allSprites = Object.values(spriteAssets);
-    let loadedSprites = 0;
-
-    function onSpriteReady() {
-        loadedSprites += 1;
-
-        if (loadedSprites === allSprites.length && !gameStarted) {
-            cacheSpriteCollisionBounds();
-            gameStarted = true;
-            placePlayerAtRoomCenter();
-            draw();
-            gameLoop();
-        }
-    }
-
-    allSprites.forEach((image) => {
-        if (image.complete && image.naturalWidth) {
-            onSpriteReady();
-            return;
-        }
-
-        image.addEventListener("load", onSpriteReady, { once: true });
-    });
+function startGame() {
+    resizeCanvas();
+    cacheCollisionMaskData();
+    placePlayerAtRoomCenter();
+    draw();
+    gameLoop();
 }
 
-document.addEventListener("keydown", (event) => {
+function handleKeyDown(event) {
     const key = event.key.toLowerCase();
 
     if (["w", "a", "s", "d", "z", "c", "enter", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
@@ -678,19 +517,24 @@ document.addEventListener("keydown", (event) => {
 
         event.preventDefault();
     }
-});
+}
 
-document.addEventListener("keyup", (event) => {
+function handleKeyUp(event) {
     const key = event.key.toLowerCase();
 
     if (["w", "a", "s", "d", "z", "c", "enter", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
         keys[key] = false;
         event.preventDefault();
     }
-});
+}
 
-canvas.addEventListener("click", (event) => {
-    const rect = canvas.getBoundingClientRect();
+window.addEventListener("keydown", handleKeyDown);
+window.addEventListener("keyup", handleKeyUp);
+
+gameCanvas.addEventListener("click", (event) => {
+    gameCanvas.focus();
+
+    const rect = gameCanvas.getBoundingClientRect();
     const worldRect = getWorldRect();
     const clickX = event.clientX - rect.left;
     const clickY = event.clientY - rect.top;
@@ -698,14 +542,14 @@ canvas.addEventListener("click", (event) => {
     target = screenToWorldPoint(clickX, clickY, worldRect);
 });
 
-window.addEventListener("resize", () => {
-    resizeCanvas();
-    keepPlayerInsideWorld();
-
-    if (gameStarted) {
-        draw();
-    }
+window.addEventListener("pointerdown", () => {
+    gameCanvas.focus();
 });
 
-resizeCanvas();
-handleSpriteLoading();
+window.addEventListener("resize", () => {
+    resizeCanvas();
+    draw();
+});
+
+startGame();
+gameCanvas.focus();
