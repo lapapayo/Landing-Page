@@ -7,15 +7,10 @@ gameCanvas.tabIndex = 0;
 
 const WORLD_WIDTH = 1920;
 const WORLD_HEIGHT = 1080;
-const WORLD_STEP = 4;
-const WORLD_RUN_STEP = 7;
 const PLAYER_WIDTH = 96;
 const PLAYER_HEIGHT = 114;
-const PLAYER_FOOT_HITBOX = {
-    width: 16,
-    height: 8
-};
-const COLLISION_ALPHA_THRESHOLD = 16;
+const PLAYER_SPEED = 240;
+const WALK_FRAME_DURATION = 140;
 
 const viewport = {
     dpr: window.devicePixelRatio || 1,
@@ -23,20 +18,29 @@ const viewport = {
     height: window.innerHeight
 };
 
-const keys = {};
-let target = null;
-let direction = "down";
-let frame = 0;
-let frameTimer = 0;
-let interactionRequested = false;
-let collisionMaskData = null;
+const MOVEMENT_KEYS = ["w", "a", "s", "d", "arrowup", "arrowleft", "arrowdown", "arrowright"];
 
 const player = {
     x: 0,
-    y: 0,
-    speed: WORLD_STEP,
-    runSpeed: WORLD_RUN_STEP
+    y: 0
 };
+
+const npc = {
+    joy: {
+        x: 840,
+        y: 138,
+        width: 72,
+        height: 96
+    }
+};
+
+let backgroundDirty = true;
+let previousRenderState = "";
+let lastFrameTime = 0;
+let direction = "down";
+let frame = 0;
+let frameTimer = 0;
+const movementKeyOrder = [];
 
 backgroundCtx.imageSmoothingEnabled = false;
 ctx.imageSmoothingEnabled = false;
@@ -49,7 +53,6 @@ function loadSprite(src) {
 
 const assets = {
     background: loadSprite("bg.png"),
-    collisionMask: loadSprite("HsBG/HsLD.png"),
     nurseJoy: loadSprite("Spritesnpcs/joynurses.png"),
     playerDownIdle: loadSprite("Spritesheet/abajoquieto.png"),
     playerDownWalk1: loadSprite("Spritesheet/abajoandando1.png"),
@@ -60,45 +63,46 @@ const assets = {
     playerLeftWalk2: loadSprite("Spritesheet/izquierdandando2.png")
 };
 
-Object.values(assets).forEach((image) => {
-    image.addEventListener("load", () => {
-        draw();
-    });
-});
-
 const animations = {
-    down: [
-        { assetKey: "playerDownIdle", flipX: false },
-        { assetKey: "playerDownWalk1", flipX: false },
-        { assetKey: "playerDownWalk1", flipX: true }
-    ],
-    up: [
-        { assetKey: "playerUpIdle", flipX: false },
-        { assetKey: "playerUpWalk1", flipX: false },
-        { assetKey: "playerUpWalk1", flipX: true }
-    ],
-    left: [
-        { assetKey: "playerLeftIdle", flipX: false },
-        { assetKey: "playerLeftWalk1", flipX: false },
-        { assetKey: "playerLeftWalk2", flipX: false }
-    ],
-    right: [
-        { assetKey: "playerLeftIdle", flipX: true },
-        { assetKey: "playerLeftWalk1", flipX: true },
-        { assetKey: "playerLeftWalk2", flipX: true }
-    ]
-};
-
-const npc = {
-    joy: {
-        x: 840,
-        y: 138,
-        width: 72,
-        height: 96
+    down: {
+        idle: { assetKey: "playerDownIdle", flipX: false },
+        walk: [
+            { assetKey: "playerDownWalk1", flipX: false },
+            { assetKey: "playerDownWalk1", flipX: true }
+        ]
+    },
+    up: {
+        idle: { assetKey: "playerUpIdle", flipX: false },
+        walk: [
+            { assetKey: "playerUpWalk1", flipX: false },
+            { assetKey: "playerUpWalk1", flipX: true }
+        ]
+    },
+    left: {
+        idle: { assetKey: "playerLeftIdle", flipX: false },
+        walk: [
+            { assetKey: "playerLeftWalk1", flipX: false },
+            { assetKey: "playerLeftWalk2", flipX: false }
+        ]
+    },
+    right: {
+        idle: { assetKey: "playerLeftIdle", flipX: true },
+        walk: [
+            { assetKey: "playerLeftWalk1", flipX: true },
+            { assetKey: "playerLeftWalk2", flipX: true }
+        ]
     }
 };
 
-assets.collisionMask.addEventListener("load", cacheCollisionMaskData);
+Object.values(assets).forEach((image) => {
+    image.addEventListener("load", () => {
+        if (image === assets.background) {
+            backgroundDirty = true;
+        }
+
+        draw(true);
+    });
+});
 
 function resizeCanvas() {
     viewport.dpr = window.devicePixelRatio || 1;
@@ -119,29 +123,7 @@ function resizeCanvas() {
     ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     backgroundCtx.imageSmoothingEnabled = false;
     ctx.imageSmoothingEnabled = false;
-}
-
-function cacheCollisionMaskData() {
-    const image = assets.collisionMask;
-
-    if (!image.complete || !image.naturalWidth) {
-        collisionMaskData = null;
-        return;
-    }
-
-    try {
-        const buffer = document.createElement("canvas");
-        const bufferCtx = buffer.getContext("2d", { willReadFrequently: true });
-
-        buffer.width = image.naturalWidth;
-        buffer.height = image.naturalHeight;
-        bufferCtx.clearRect(0, 0, buffer.width, buffer.height);
-        bufferCtx.drawImage(image, 0, 0);
-        collisionMaskData = bufferCtx.getImageData(0, 0, buffer.width, buffer.height);
-    } catch (error) {
-        console.error("No se pudo leer la mascara de colision HsLD.png:", error);
-        collisionMaskData = null;
-    }
+    backgroundDirty = true;
 }
 
 function getWorldRect() {
@@ -183,152 +165,38 @@ function worldToScreenHeight(worldHeight, worldRect) {
     return (worldHeight / WORLD_HEIGHT) * worldRect.height;
 }
 
-function screenToWorldPoint(screenX, screenY, worldRect) {
-    const clampedX = Math.min(Math.max(screenX, worldRect.x), worldRect.x + worldRect.width);
-    const clampedY = Math.min(Math.max(screenY, worldRect.y), worldRect.y + worldRect.height);
-
-    return {
-        x: ((clampedX - worldRect.x) / worldRect.width) * WORLD_WIDTH,
-        y: ((clampedY - worldRect.y) / worldRect.height) * WORLD_HEIGHT
-    };
-}
-
-function getCurrentFrameConfig() {
-    const currentAnimation = animations[direction];
-    return currentAnimation[frame] || currentAnimation[0];
-}
-
-function getPlayerFootHitbox(nextX = player.x, nextY = player.y) {
-    return {
-        x: nextX + (PLAYER_WIDTH - PLAYER_FOOT_HITBOX.width) / 2,
-        y: nextY + PLAYER_HEIGHT - PLAYER_FOOT_HITBOX.height,
-        width: PLAYER_FOOT_HITBOX.width,
-        height: PLAYER_FOOT_HITBOX.height
-    };
-}
-
-function isCollisionPixelSolid(worldX, worldY) {
-    if (!collisionMaskData) {
-        return false;
-    }
-
-    const x = Math.floor(worldX);
-    const y = Math.floor(worldY);
-
-    if (x < 0 || y < 0 || x >= collisionMaskData.width || y >= collisionMaskData.height) {
-        return true;
-    }
-
-    const alpha = collisionMaskData.data[(y * collisionMaskData.width + x) * 4 + 3];
-    return alpha >= COLLISION_ALPHA_THRESHOLD;
-}
-
-function footHitboxTouchesCollisionMask(hitbox) {
-    const left = Math.floor(hitbox.x) + 1;
-    const center = Math.floor(hitbox.x + hitbox.width / 2);
-    const right = Math.ceil(hitbox.x + hitbox.width) - 2;
-    const bottom = Math.ceil(hitbox.y + hitbox.height) - 1;
-    const upper = Math.floor(hitbox.y + 1);
-
-    return (
-        isCollisionPixelSolid(left, bottom) ||
-        isCollisionPixelSolid(center, bottom) ||
-        isCollisionPixelSolid(right, bottom) ||
-        isCollisionPixelSolid(left, upper) ||
-        isCollisionPixelSolid(right, upper)
-    );
-}
-
-function canMoveTo(nextX, nextY) {
-    if (!collisionMaskData && assets.collisionMask.complete && assets.collisionMask.naturalWidth) {
-        cacheCollisionMaskData();
-    }
-
-    if (
-        nextX < 0 ||
-        nextY < 0 ||
-        nextX + PLAYER_WIDTH > WORLD_WIDTH ||
-        nextY + PLAYER_HEIGHT > WORLD_HEIGHT
-    ) {
-        return false;
-    }
-
-    return !footHitboxTouchesCollisionMask(getPlayerFootHitbox(nextX, nextY));
-}
-
-function movePlayer(dx, dy) {
-    let moved = false;
-    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy))));
-    const stepX = dx / steps;
-    const stepY = dy / steps;
-
-    for (let index = 0; index < steps; index++) {
-        if (stepX !== 0 && canMoveTo(player.x + stepX, player.y)) {
-            player.x += stepX;
-            moved = true;
-        }
-
-        if (stepY !== 0 && canMoveTo(player.x, player.y + stepY)) {
-            player.y += stepY;
-            moved = true;
-        }
-    }
-
-    return moved;
-}
-
-function getCenteredSpawnPosition() {
-    const preferredX = Math.round(WORLD_WIDTH / 2 - PLAYER_WIDTH / 2);
-    const preferredY = Math.round(WORLD_HEIGHT / 2 - PLAYER_HEIGHT / 2);
-
-    if (canMoveTo(preferredX, preferredY)) {
-        return { x: preferredX, y: preferredY };
-    }
-
-    const step = 8;
-    const maxRadius = Math.ceil(Math.max(WORLD_WIDTH, WORLD_HEIGHT) / step);
-
-    for (let radius = 1; radius <= maxRadius; radius++) {
-        for (let offsetY = -radius; offsetY <= radius; offsetY++) {
-            for (let offsetX = -radius; offsetX <= radius; offsetX++) {
-                if (Math.abs(offsetX) !== radius && Math.abs(offsetY) !== radius) {
-                    continue;
-                }
-
-                const candidateX = preferredX + offsetX * step;
-                const candidateY = preferredY + offsetY * step;
-
-                if (canMoveTo(candidateX, candidateY)) {
-                    return { x: candidateX, y: candidateY };
-                }
-            }
-        }
-    }
-
-    return { x: preferredX, y: preferredY };
-}
-
 function placePlayerAtRoomCenter() {
-    const spawn = getCenteredSpawnPosition();
-    player.x = spawn.x;
-    player.y = spawn.y;
+    player.x = Math.round(WORLD_WIDTH / 2 - PLAYER_WIDTH / 2);
+    player.y = Math.round(WORLD_HEIGHT / 2 - PLAYER_HEIGHT / 2);
 }
 
 function drawBackground(worldRect) {
-    return;
+    backgroundCtx.clearRect(0, 0, viewport.width, viewport.height);
+    backgroundCtx.fillStyle = "#000000";
+    backgroundCtx.fillRect(0, 0, viewport.width, viewport.height);
+
+    if (!assets.background.complete || !assets.background.naturalWidth) {
+        return;
+    }
+
+    backgroundCtx.drawImage(
+        assets.background,
+        worldRect.x,
+        worldRect.y,
+        worldRect.width,
+        worldRect.height
+    );
 }
 
 function drawNpc(worldRect) {
-    const joy = npc.joy;
-
     if (!assets.nurseJoy.complete || !assets.nurseJoy.naturalWidth) {
         return;
     }
 
-    const screenX = Math.round(worldToScreenX(joy.x, worldRect));
-    const screenY = Math.round(worldToScreenY(joy.y, worldRect));
-    const screenWidth = Math.round(worldToScreenWidth(joy.width, worldRect));
-    const screenHeight = Math.round(worldToScreenHeight(joy.height, worldRect));
+    const screenX = Math.round(worldToScreenX(npc.joy.x, worldRect));
+    const screenY = Math.round(worldToScreenY(npc.joy.y, worldRect));
+    const screenWidth = Math.round(worldToScreenWidth(npc.joy.width, worldRect));
+    const screenHeight = Math.round(worldToScreenHeight(npc.joy.height, worldRect));
 
     ctx.drawImage(assets.nurseJoy, screenX, screenY, screenWidth, screenHeight);
 }
@@ -338,13 +206,6 @@ function drawPlayerFallback(worldRect) {
     const screenY = Math.round(worldToScreenY(player.y, worldRect));
     const screenWidth = Math.round(worldToScreenWidth(PLAYER_WIDTH, worldRect));
     const screenHeight = Math.round(worldToScreenHeight(PLAYER_HEIGHT, worldRect));
-    const headSize = Math.max(8, Math.round(screenWidth * 0.35));
-    const bodyWidth = Math.max(10, Math.round(screenWidth * 0.42));
-    const bodyHeight = Math.max(16, Math.round(screenHeight * 0.38));
-    const headX = Math.round(screenX + (screenWidth - headSize) / 2);
-    const headY = Math.round(screenY + 6);
-    const bodyX = Math.round(screenX + (screenWidth - bodyWidth) / 2);
-    const bodyY = headY + headSize - 2;
 
     ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
     ctx.beginPath();
@@ -359,17 +220,18 @@ function drawPlayerFallback(worldRect) {
     );
     ctx.fill();
 
-    ctx.fillStyle = "#2b2b2b";
-    ctx.fillRect(bodyX - 2, bodyY - 2, bodyWidth + 4, bodyHeight + 4);
-    ctx.fillRect(headX - 2, headY - 2, headSize + 4, headSize + 4);
-
-    ctx.fillStyle = "#f2c094";
-    ctx.fillRect(headX, headY, headSize, headSize);
     ctx.fillStyle = "#cf3f3f";
-    ctx.fillRect(bodyX, bodyY, bodyWidth, bodyHeight);
-    ctx.fillStyle = "#2755d8";
-    ctx.fillRect(bodyX + 2, bodyY + bodyHeight, Math.round(bodyWidth / 2) - 3, Math.max(10, Math.round(screenHeight * 0.18)));
-    ctx.fillRect(bodyX + Math.round(bodyWidth / 2) + 1, bodyY + bodyHeight, Math.round(bodyWidth / 2) - 3, Math.max(10, Math.round(screenHeight * 0.18)));
+    ctx.fillRect(screenX, screenY, screenWidth, screenHeight);
+}
+
+function getCurrentFrameConfig() {
+    const animation = animations[direction];
+
+    if (frame === 0) {
+        return animation.idle;
+    }
+
+    return animation.walk[frame - 1] || animation.idle;
 }
 
 function drawPlayer(worldRect) {
@@ -397,159 +259,217 @@ function drawPlayer(worldRect) {
     ctx.drawImage(image, screenX, screenY, screenWidth, screenHeight);
 }
 
-function draw() {
-    ctx.clearRect(0, 0, viewport.width, viewport.height);
+function getRenderState() {
+    return [
+        Math.round(player.x * 100) / 100,
+        Math.round(player.y * 100) / 100,
+        direction,
+        frame
+    ].join("|");
+}
 
+function draw(force = false) {
     const worldRect = getWorldRect();
-    drawBackground(worldRect);
+
+    if (backgroundDirty || force) {
+        drawBackground(worldRect);
+        backgroundDirty = false;
+    }
+
+    const renderState = getRenderState();
+
+    if (!force && renderState === previousRenderState) {
+        return;
+    }
+
+    ctx.clearRect(0, 0, viewport.width, viewport.height);
     drawNpc(worldRect);
     drawPlayer(worldRect);
+    previousRenderState = renderState;
 }
 
-function moveKeyboard() {
-    const currentSpeed = keys.z ? player.runSpeed : player.speed;
-
-    if (keys.w || keys.arrowup) {
-        direction = "up";
-        return movePlayer(0, -currentSpeed);
+function keyToDirection(key) {
+    switch (key) {
+        case "w":
+        case "arrowup":
+            return "up";
+        case "s":
+        case "arrowdown":
+            return "down";
+        case "a":
+        case "arrowleft":
+            return "left";
+        case "d":
+        case "arrowright":
+            return "right";
+        default:
+            return null;
     }
-
-    if (keys.s || keys.arrowdown) {
-        direction = "down";
-        return movePlayer(0, currentSpeed);
-    }
-
-    if (keys.a || keys.arrowleft) {
-        direction = "left";
-        return movePlayer(-currentSpeed, 0);
-    }
-
-    if (keys.d || keys.arrowright) {
-        direction = "right";
-        return movePlayer(currentSpeed, 0);
-    }
-
-    return false;
 }
 
-function moveToTarget() {
-    if (!target) {
+function getActiveMovementKey() {
+    return movementKeyOrder[movementKeyOrder.length - 1] || null;
+}
+
+function registerMovementKey(key) {
+    if (!movementKeyOrder.includes(key)) {
+        movementKeyOrder.push(key);
+    }
+}
+
+function unregisterMovementKey(key) {
+    const keyIndex = movementKeyOrder.indexOf(key);
+
+    if (keyIndex >= 0) {
+        movementKeyOrder.splice(keyIndex, 1);
+    }
+}
+
+function clampPlayerToWorld() {
+    player.x = Math.min(Math.max(player.x, 0), WORLD_WIDTH - PLAYER_WIDTH);
+    player.y = Math.min(Math.max(player.y, 0), WORLD_HEIGHT - PLAYER_HEIGHT);
+}
+
+function movePlayer(deltaMs) {
+    const activeKey = getActiveMovementKey();
+
+    if (!activeKey) {
         return false;
     }
 
-    const dx = target.x - player.x;
-    const dy = target.y - player.y;
-    const distance = Math.hypot(dx, dy);
+    direction = keyToDirection(activeKey) || direction;
 
-    if (distance <= 2) {
-        target = null;
-        return false;
+    const distance = PLAYER_SPEED * (deltaMs / 1000);
+
+    switch (direction) {
+        case "up":
+            player.y -= distance;
+            break;
+        case "down":
+            player.y += distance;
+            break;
+        case "left":
+            player.x -= distance;
+            break;
+        case "right":
+            player.x += distance;
+            break;
+        default:
+            return false;
     }
 
-    const moveX = (dx / distance) * player.speed;
-    const moveY = (dy / distance) * player.speed;
-
-    if (Math.abs(dx) > Math.abs(dy)) {
-        direction = dx > 0 ? "right" : "left";
-    } else {
-        direction = dy > 0 ? "down" : "up";
-    }
-
-    return movePlayer(moveX, moveY);
+    clampPlayerToWorld();
+    return true;
 }
 
-function updateAnimation(isMoving) {
+function updateAnimation(isMoving, deltaMs) {
     if (!isMoving) {
-        frame = IDLE_FRAME;
+        frame = 0;
         frameTimer = 0;
         return;
     }
 
-    frameTimer += 1;
+    if (frame === 0) {
+        frame = 1;
+    }
 
-    if (frameTimer > 10) {
-        const currentAnimation = animations[direction];
-        frame = (frame + 1) % currentAnimation.length;
+    frameTimer += deltaMs;
+
+    if (frameTimer >= WALK_FRAME_DURATION) {
+        frame = frame === 1 ? 2 : 1;
         frameTimer = 0;
     }
 }
 
-function tryInteract() {
-    if (!interactionRequested) {
-        return;
-    }
+function gameLoop(timestamp) {
+    const deltaMs = lastFrameTime > 0 ? Math.max(0, timestamp - lastFrameTime) : 0;
 
-    interactionRequested = false;
-}
+    lastFrameTime = timestamp;
 
-function gameLoop() {
-    const movingKeyboard = moveKeyboard();
-    const movingMouse = moveToTarget();
-
-    tryInteract();
-    updateAnimation(movingKeyboard || movingMouse);
+    const isMoving = movePlayer(deltaMs);
+    updateAnimation(isMoving, deltaMs);
     draw();
 
     window.requestAnimationFrame(gameLoop);
 }
 
-function startGame() {
-    resizeCanvas();
-    cacheCollisionMaskData();
-    placePlayerAtRoomCenter();
-    draw();
-    gameLoop();
+function clearMovementInput() {
+    movementKeyOrder.length = 0;
+    frame = 0;
+    frameTimer = 0;
 }
 
 function handleKeyDown(event) {
     const key = event.key.toLowerCase();
 
-    if (["w", "a", "s", "d", "z", "c", "enter", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
-        keys[key] = true;
-
-        if (["w", "a", "s", "d", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
-            target = null;
-        }
-
-        if (key === "c" || key === "enter") {
-            interactionRequested = true;
-        }
-
-        event.preventDefault();
+    if (!MOVEMENT_KEYS.includes(key)) {
+        return;
     }
+
+    if (!event.repeat) {
+        registerMovementKey(key);
+
+        const activeKey = getActiveMovementKey();
+
+        if (activeKey) {
+            direction = keyToDirection(activeKey) || direction;
+        }
+    }
+
+    event.preventDefault();
 }
 
 function handleKeyUp(event) {
     const key = event.key.toLowerCase();
 
-    if (["w", "a", "s", "d", "z", "c", "enter", "arrowup", "arrowleft", "arrowdown", "arrowright"].includes(key)) {
-        keys[key] = false;
-        event.preventDefault();
+    if (!MOVEMENT_KEYS.includes(key)) {
+        return;
     }
+
+    unregisterMovementKey(key);
+
+    const activeKey = getActiveMovementKey();
+
+    if (activeKey) {
+        direction = keyToDirection(activeKey) || direction;
+    }
+
+    event.preventDefault();
+}
+
+function startScene() {
+    resizeCanvas();
+    placePlayerAtRoomCenter();
+    draw(true);
+    lastFrameTime = performance.now();
+    window.requestAnimationFrame(gameLoop);
 }
 
 window.addEventListener("keydown", handleKeyDown);
 window.addEventListener("keyup", handleKeyUp);
 
-gameCanvas.addEventListener("click", (event) => {
-    gameCanvas.focus();
-
-    const rect = gameCanvas.getBoundingClientRect();
-    const worldRect = getWorldRect();
-    const clickX = event.clientX - rect.left;
-    const clickY = event.clientY - rect.top;
-
-    target = screenToWorldPoint(clickX, clickY, worldRect);
+window.addEventListener("resize", () => {
+    resizeCanvas();
+    draw(true);
 });
 
 window.addEventListener("pointerdown", () => {
     gameCanvas.focus();
 });
 
-window.addEventListener("resize", () => {
-    resizeCanvas();
-    draw();
+window.addEventListener("blur", () => {
+    clearMovementInput();
+    draw(true);
 });
 
-startGame();
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+        lastFrameTime = performance.now();
+        return;
+    }
+
+    clearMovementInput();
+});
+
+startScene();
 gameCanvas.focus();

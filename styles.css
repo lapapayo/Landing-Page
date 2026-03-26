@@ -12,10 +12,6 @@ html, body {
 body {
   position: relative;
   background-color: #000000;
-  background-image: url("bg.png");
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: 90% 100%;
   overflow: hidden;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
@@ -36,11 +32,12 @@ body {
 }
 
 #backgroundCanvas {
-  display: none;
+  z-index: 1;
+  background: #000000;
 }
 
 #gameCanvas {
-  z-index: 3;
+  z-index: 2;
   background: transparent;
   touch-action: none;
 }
