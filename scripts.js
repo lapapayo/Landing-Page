@@ -17,8 +17,9 @@ const WALK_FRAME_DURATION = 140;
 const RUN_FRAME_DURATION = 90;
 const CLICK_STOP_DISTANCE = 6;
 const SHOW_COLLISION_DEBUG = true;
+const SHOW_WALKABLE_BOUNDARY = true;
 const RUN_KEY = "z";
-const WALKABLE_WHITE_THRESHOLD = 250;
+const ASSET_VERSION = Date.now();
 
 const viewport = {
     dpr: window.devicePixelRatio || 1,
@@ -61,6 +62,8 @@ let frameTimer = 0;
 let target = null;
 let isRunning = false;
 let walkableMaskData = null;
+let maskCollisionRects = [];
+let walkableBoundaryCanvas = null;
 const movementKeyOrder = [];
 
 backgroundCtx.imageSmoothingEnabled = false;
@@ -68,7 +71,8 @@ ctx.imageSmoothingEnabled = false;
 
 function loadSprite(src) {
     const image = new Image();
-    image.src = src;
+    const separator = src.includes("?") ? "&" : "?";
+    image.src = `${src}${separator}v=${ASSET_VERSION}`;
     return image;
 }
 
@@ -131,6 +135,8 @@ function handleAssetReady(image) {
 function cacheWalkableMask() {
     if (!assets.walkableMask.complete || !assets.walkableMask.naturalWidth) {
         walkableMaskData = null;
+        maskCollisionRects = [];
+        walkableBoundaryCanvas = null;
         return;
     }
 
@@ -142,6 +148,135 @@ function cacheWalkableMask() {
     maskCtx.imageSmoothingEnabled = false;
     maskCtx.drawImage(assets.walkableMask, 0, 0);
     walkableMaskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+    buildMaskCollisionRects();
+    cacheWalkableBoundary();
+    backgroundDirty = true;
+
+    if (!canMoveTo(player.x, player.y)) {
+        placePlayerAtRoomCenter();
+    }
+}
+
+function isCollisionMaskColor(data, pixelIndex) {
+    const alpha = data[pixelIndex + 3];
+
+    // The collision mask is authored as a dedicated overlay, so any visible pixel
+    // in bgtransitable should block movement regardless of slight color variation.
+    return alpha > 0;
+}
+
+function buildMaskCollisionRects() {
+    if (!walkableMaskData) {
+        maskCollisionRects = [];
+        return;
+    }
+
+    const maskWidth = walkableMaskData.width;
+    const maskHeight = walkableMaskData.height;
+    const sourceData = walkableMaskData.data;
+    const rects = [];
+    let activeRuns = new Map();
+
+    for (let y = 0; y < maskHeight; y++) {
+        const continuedRuns = new Map();
+        let x = 0;
+
+        while (x < maskWidth) {
+            const pixelIndex = (y * maskWidth + x) * 4;
+
+            if (!isCollisionMaskColor(sourceData, pixelIndex)) {
+                x += 1;
+                continue;
+            }
+
+            const startX = x;
+            x += 1;
+
+            while (x < maskWidth) {
+                const nextPixelIndex = (y * maskWidth + x) * 4;
+
+                if (!isCollisionMaskColor(sourceData, nextPixelIndex)) {
+                    break;
+                }
+
+                x += 1;
+            }
+
+            const runWidth = x - startX;
+            const runKey = `${startX}:${runWidth}`;
+            const existingRect = activeRuns.get(runKey);
+
+            if (existingRect) {
+                existingRect.height += 1;
+                continuedRuns.set(runKey, existingRect);
+                activeRuns.delete(runKey);
+                continue;
+            }
+
+            const newRect = {
+                x: startX,
+                y,
+                width: runWidth,
+                height: 1
+            };
+
+            rects.push(newRect);
+            continuedRuns.set(runKey, newRect);
+        }
+
+        activeRuns = continuedRuns;
+    }
+
+    maskCollisionRects = rects;
+}
+
+function cacheWalkableBoundary() {
+    if (!walkableMaskData) {
+        walkableBoundaryCanvas = null;
+        return;
+    }
+
+    const boundaryCanvas = document.createElement("canvas");
+    boundaryCanvas.width = walkableMaskData.width;
+    boundaryCanvas.height = walkableMaskData.height;
+
+    const boundaryCtx = boundaryCanvas.getContext("2d");
+    const boundaryImageData = boundaryCtx.createImageData(boundaryCanvas.width, boundaryCanvas.height);
+    const sourceData = walkableMaskData.data;
+    const boundaryData = boundaryImageData.data;
+    const rowStride = boundaryCanvas.width * 4;
+
+    for (let y = 0; y < boundaryCanvas.height; y++) {
+        for (let x = 0; x < boundaryCanvas.width; x++) {
+            const pixelIndex = (y * boundaryCanvas.width + x) * 4;
+
+            if (!isCollisionMaskColor(sourceData, pixelIndex)) {
+                continue;
+            }
+
+            const touchesOutside =
+                x === 0 ||
+                y === 0 ||
+                x === boundaryCanvas.width - 1 ||
+                y === boundaryCanvas.height - 1 ||
+                !isCollisionMaskColor(sourceData, pixelIndex - 4) ||
+                !isCollisionMaskColor(sourceData, pixelIndex + 4) ||
+                !isCollisionMaskColor(sourceData, pixelIndex - rowStride) ||
+                !isCollisionMaskColor(sourceData, pixelIndex + rowStride);
+
+            if (!touchesOutside) {
+                continue;
+            }
+
+            boundaryData[pixelIndex] = 255;
+            boundaryData[pixelIndex + 1] = 244;
+            boundaryData[pixelIndex + 2] = 92;
+            boundaryData[pixelIndex + 3] = 255;
+        }
+    }
+
+    boundaryCtx.putImageData(boundaryImageData, 0, 0);
+    walkableBoundaryCanvas = boundaryCanvas;
 }
 
 Object.values(assets).forEach((image) => {
@@ -247,48 +382,12 @@ function collidesWithObstacle(hitbox) {
     return collisionRects.some((obstacle) => rectanglesOverlap(hitbox, obstacle));
 }
 
-function isWalkablePixel(worldX, worldY) {
-    if (!walkableMaskData) {
-        return !collidesWithObstacle({
-            x: worldX,
-            y: worldY,
-            width: 1,
-            height: 1
-        });
-    }
-
-    const pixelX = Math.max(0, Math.min(WORLD_WIDTH - 1, Math.round(worldX)));
-    const pixelY = Math.max(0, Math.min(WORLD_HEIGHT - 1, Math.round(worldY)));
-    const pixelIndex = (pixelY * walkableMaskData.width + pixelX) * 4;
-    const data = walkableMaskData.data;
-    const alpha = data[pixelIndex + 3];
-
-    if (alpha === 0) {
+function collidesWithMask(hitbox) {
+    if (!maskCollisionRects.length) {
         return false;
     }
 
-    return (
-        data[pixelIndex] >= WALKABLE_WHITE_THRESHOLD &&
-        data[pixelIndex + 1] >= WALKABLE_WHITE_THRESHOLD &&
-        data[pixelIndex + 2] >= WALKABLE_WHITE_THRESHOLD
-    );
-}
-
-function isWalkableHitbox(hitbox) {
-    const startX = Math.max(0, Math.floor(hitbox.x));
-    const startY = Math.max(0, Math.floor(hitbox.y));
-    const endX = Math.min(WORLD_WIDTH - 1, Math.ceil(hitbox.x + hitbox.width) - 1);
-    const endY = Math.min(WORLD_HEIGHT - 1, Math.ceil(hitbox.y + hitbox.height) - 1);
-
-    for (let sampleY = startY; sampleY <= endY; sampleY++) {
-        for (let sampleX = startX; sampleX <= endX; sampleX++) {
-            if (!isWalkablePixel(sampleX, sampleY)) {
-                return false;
-            }
-        }
-    }
-
-    return true;
+    return maskCollisionRects.some((obstacle) => rectanglesOverlap(hitbox, obstacle));
 }
 
 function canMoveTo(nextX, nextY) {
@@ -302,7 +401,7 @@ function canMoveTo(nextX, nextY) {
     }
 
     const playerHitbox = getPlayerHitbox(nextX, nextY);
-    return isWalkableHitbox(playerHitbox) && !collidesWithObstacle(playerHitbox);
+    return !collidesWithMask(playerHitbox) && !collidesWithObstacle(playerHitbox);
 }
 
 function placePlayerAtRoomCenter() {
@@ -357,6 +456,16 @@ function drawBackground(worldRect) {
         worldRect.width,
         worldRect.height
     );
+
+    if (SHOW_WALKABLE_BOUNDARY && walkableBoundaryCanvas) {
+        backgroundCtx.drawImage(
+            walkableBoundaryCanvas,
+            worldRect.x,
+            worldRect.y,
+            worldRect.width,
+            worldRect.height
+        );
+    }
 }
 
 function drawNpc(worldRect) {
@@ -445,6 +554,29 @@ function drawCollisionDebug(worldRect) {
     ctx.save();
     ctx.lineWidth = 1;
 
+    if (assets.walkableMask.complete && assets.walkableMask.naturalWidth) {
+        ctx.save();
+        ctx.globalAlpha = 0.18;
+        ctx.drawImage(
+            assets.walkableMask,
+            worldRect.x,
+            worldRect.y,
+            worldRect.width,
+            worldRect.height
+        );
+        ctx.restore();
+    }
+
+    if (walkableBoundaryCanvas) {
+        ctx.drawImage(
+            walkableBoundaryCanvas,
+            worldRect.x,
+            worldRect.y,
+            worldRect.width,
+            worldRect.height
+        );
+    }
+
     collisionRects.forEach((obstacle) => {
         const screenX = Math.round(worldToScreenX(obstacle.x, worldRect));
         const screenY = Math.round(worldToScreenY(obstacle.y, worldRect));
@@ -462,6 +594,8 @@ function drawCollisionDebug(worldRect) {
     const playerScreenY = Math.round(worldToScreenY(playerHitbox.y, worldRect));
     const playerScreenWidth = Math.max(1, Math.round(worldToScreenWidth(playerHitbox.width, worldRect)));
     const playerScreenHeight = Math.max(1, Math.round(worldToScreenHeight(playerHitbox.height, worldRect)));
+    const isMaskCollisionActive = collidesWithMask(playerHitbox);
+    const isRectCollisionActive = collidesWithObstacle(playerHitbox);
 
     ctx.strokeStyle = "rgba(0, 255, 160, 0.95)";
     ctx.strokeRect(
@@ -472,13 +606,15 @@ function drawCollisionDebug(worldRect) {
     );
 
     ctx.fillStyle = "rgba(8, 12, 18, 0.8)";
-    ctx.fillRect(worldRect.x + 12, worldRect.y + 12, 220, 56);
+    ctx.fillRect(worldRect.x + 12, worldRect.y + 12, 260, 84);
     ctx.fillStyle = "#ffffff";
     ctx.font = "12px monospace";
     ctx.textBaseline = "top";
-    ctx.fillText(`Mode: ${walkableMaskData ? "white-mask + rects" : "rects"}`, worldRect.x + 20, worldRect.y + 20);
+    ctx.fillText(walkableMaskData ? "Mode: red-mask + rects" : "Mode: rects only", worldRect.x + 20, worldRect.y + 20);
     ctx.fillText(`Player: ${Math.round(player.x)}, ${Math.round(player.y)}`, worldRect.x + 20, worldRect.y + 34);
-    ctx.fillText(walkableMaskData ? "Source: bgtransitable + HsLD" : "Source: HsLD baked", worldRect.x + 20, worldRect.y + 48);
+    ctx.fillText(walkableMaskData ? "Source: bgtransitable red + HsLD" : "Source: HsLD rects", worldRect.x + 20, worldRect.y + 48);
+    ctx.fillText(`Mask hit: ${isMaskCollisionActive} Rect hit: ${isRectCollisionActive}`, worldRect.x + 20, worldRect.y + 62);
+    ctx.fillText(`Mask rects: ${maskCollisionRects.length}`, worldRect.x + 20, worldRect.y + 76);
 
     ctx.restore();
 }
