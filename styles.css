@@ -1,3 +1,13 @@
+@font-face {
+  font-family: "Pokemon DP";
+  src: url("pokemon-dp-pro.otf/pokemon-dp-pro.otf") format("opentype");
+  font-display: swap;
+}
+
+:root {
+  --font-pokemon: "Pokemon DP", sans-serif;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -13,6 +23,7 @@ body {
   position: relative;
   background-color: #000000;
   overflow: hidden;
+  font-family: var(--font-pokemon);
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   touch-action: manipulation;
@@ -41,4 +52,95 @@ body {
   background: transparent;
   touch-action: none;
 }
- 
+
+#dialogBox {
+  position: fixed;
+  left: 50%;
+  bottom: 2vh;
+  transform: translateX(-50%);
+  z-index: 3;
+  width: min(92vw, 960px);
+  aspect-ratio: 255 / 48;
+  padding: 5.5% 8%;
+  display: flex;
+  align-items: center;
+  background-image: url("Spritesheet/DS%20_%20DSi%20-%20Pokemon%20Platinum%20-%20Miscellaneous%20-%20Text%20Box%20Styles.png");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+  font-family: var(--font-pokemon);
+  display: none;
+}
+
+#dialogText {
+  width: 100%;
+  color: #202020;
+  font-family: var(--font-pokemon);
+  font-size: clamp(12px, 2vw, 28px);
+  line-height: 1.25;
+  letter-spacing: 0.02em;
+  text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+#choiceBox {
+  position: fixed;
+  left: 50%;
+  bottom: 2vh;
+  transform: translateX(-50%);
+  z-index: 4;
+  width: min(92vw, 960px);
+  aspect-ratio: 255 / 48;
+  padding: 4.5% 8%;
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+  background-image: url("Spritesheet/DS%20_%20DSi%20-%20Pokemon%20Platinum%20-%20Miscellaneous%20-%20Text%20Box%20Styles.png");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 100% 100%;
+  font-family: var(--font-pokemon);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+}
+
+#choiceList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-family: var(--font-pokemon);
+}
+
+.choiceOption {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #202020;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-pokemon);
+  font-size: clamp(12px, 1.5vw, 22px);
+  cursor: default;
+  pointer-events: none;
+}
+
+.choiceOption,
+.choiceOption span,
+.choiceOptionMarker {
+  font-family: var(--font-pokemon);
+}
+
+.choiceOption.is-selected {
+  color: #202020;
+}
+
+.choiceOptionMarker {
+  min-width: 1ch;
+  text-align: right;
+}

@@ -1,0 +1,4 @@
+Esta página se basa en un adivina el Pokemon.
+En resumen, será un juego en el que tienes que 
+intentar acertar el Pokémon  del que se esta preguntando.
+Buena suerte.
