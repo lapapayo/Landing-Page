@@ -9,17 +9,21 @@ const WORLD_WIDTH = 1920;
 const WORLD_HEIGHT = 1080;
 const PLAYER_WIDTH = 96;
 const PLAYER_HEIGHT = 114;
-const PLAYER_HITBOX_OFFSET_Y = PLAYER_HEIGHT / 2;
-const PLAYER_HITBOX_HEIGHT = PLAYER_HEIGHT / 2;
+const PLAYER_HITBOX_WIDTH = PLAYER_WIDTH / 2;
+const PLAYER_HITBOX_HEIGHT = PLAYER_HEIGHT / 4;
 const PLAYER_SPEED = 240;
 const RUN_SPEED_MULTIPLIER = 1.75;
 const WALK_FRAME_DURATION = 140;
 const RUN_FRAME_DURATION = 90;
 const CLICK_STOP_DISTANCE = 6;
 const SHOW_COLLISION_DEBUG = true;
-const SHOW_WALKABLE_BOUNDARY = true;
+const SHOW_WALKABLE_BOUNDARY = false;
 const RUN_KEY = "z";
 const ASSET_VERSION = Date.now();
+const FORCED_WALKABLE_ZONES = [
+    // Keep this corridor open around the reported invisible collision near (306, 222).
+    { x: 256, y: 210, width: 51, height: 26 }
+];
 
 const viewport = {
     dpr: window.devicePixelRatio || 1,
@@ -59,9 +63,9 @@ let frameTimer = 0;
 let target = null;
 let isRunning = false;
 let collisionMaskData = null;
-let collisionMapLoadState = "precomputed";
+let collisionMapLoadState = "precomputed fallback";
 let collisionBoundaryCanvas = null;
-const collisionRects = PRECOMPUTED_COLLISION_RECTS;
+let collisionRects = [...PRECOMPUTED_COLLISION_RECTS];
 const movementKeyOrder = [];
 
 backgroundCtx.imageSmoothingEnabled = false;
@@ -75,8 +79,8 @@ function loadSprite(src) {
 }
 
 const assets = {
-    background: loadSprite("bg.png"),
-    collisionMap: loadSprite("HsBG/bgfinal.png"),
+    background: loadSprite("bgconjoy.png"),
+    collisionMap: loadSprite("HsBG/bgfinalv2.png"),
     nurseJoy: loadSprite("Spritesnpcs/joynurses.png"),
     playerDownIdle: loadSprite("Spritesheet/abajoquieto.png"),
     playerDownWalk1: loadSprite("Spritesheet/abajoandando1.png"),
@@ -147,13 +151,15 @@ function cacheCollisionMap() {
         maskCtx.imageSmoothingEnabled = false;
         maskCtx.drawImage(assets.collisionMap, 0, 0);
         collisionMaskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+        collisionRects = buildCollisionRectsFromMask(collisionMaskData);
         cacheCollisionBoundary();
-        collisionMapLoadState = "image + precalc";
+        collisionMapLoadState = "image generated";
     } catch (error) {
         collisionMaskData = null;
         collisionBoundaryCanvas = null;
-        collisionMapLoadState = "precalc only";
-        console.warn("No se pudo leer bgfinal.png para el debug por pixeles:", error);
+        collisionRects = [...PRECOMPUTED_COLLISION_RECTS];
+        collisionMapLoadState = "precomputed fallback";
+        console.warn("No se pudo leer bgfinalv2.png para calcular colisiones:", error);
     }
 
     backgroundDirty = true;
@@ -163,11 +169,84 @@ function cacheCollisionMap() {
     }
 }
 
-function isCollisionMaskColor(data, pixelIndex) {
+function isForcedWalkablePixel(x, y) {
+    return FORCED_WALKABLE_ZONES.some((zone) => (
+        x >= zone.x &&
+        x < zone.x + zone.width &&
+        y >= zone.y &&
+        y < zone.y + zone.height
+    ));
+}
+
+function isCollisionMaskColor(data, pixelIndex, x, y) {
+    if (isForcedWalkablePixel(x, y)) {
+        return false;
+    }
+
     const alpha = data[pixelIndex + 3];
 
-    // In bgfinal, only transparent pixels are walkable.
+    // In the collision mask, only transparent pixels are walkable.
     return alpha > 0;
+}
+
+function buildCollisionRectsFromMask(maskData) {
+    const rects = [];
+    const activeRects = new Map();
+    const { width, height, data } = maskData;
+
+    for (let y = 0; y < height; y++) {
+        const rowRuns = [];
+        let runStart = -1;
+
+        for (let x = 0; x < width; x++) {
+            const pixelIndex = (y * width + x) * 4;
+            const isSolid = isCollisionMaskColor(data, pixelIndex, x, y);
+
+            if (isSolid && runStart === -1) {
+                runStart = x;
+            }
+
+            if (!isSolid && runStart !== -1) {
+                rowRuns.push({ x: runStart, width: x - runStart });
+                runStart = -1;
+            }
+        }
+
+        if (runStart !== -1) {
+            rowRuns.push({ x: runStart, width: width - runStart });
+        }
+
+        const nextActiveRects = new Map();
+
+        rowRuns.forEach((run) => {
+            const key = `${run.x}:${run.width}`;
+            const existingRect = activeRects.get(key);
+
+            if (existingRect) {
+                existingRect.height += 1;
+                nextActiveRects.set(key, existingRect);
+                activeRects.delete(key);
+                return;
+            }
+
+            const rect = {
+                x: run.x,
+                y,
+                width: run.width,
+                height: 1
+            };
+
+            rects.push(rect);
+            nextActiveRects.set(key, rect);
+        });
+
+        activeRects.clear();
+        nextActiveRects.forEach((rect, key) => {
+            activeRects.set(key, rect);
+        });
+    }
+
+    return rects;
 }
 
 function cacheCollisionBoundary() {
@@ -190,7 +269,7 @@ function cacheCollisionBoundary() {
         for (let x = 0; x < boundaryCanvas.width; x++) {
             const pixelIndex = (y * boundaryCanvas.width + x) * 4;
 
-            if (!isCollisionMaskColor(sourceData, pixelIndex)) {
+            if (!isCollisionMaskColor(sourceData, pixelIndex, x, y)) {
                 continue;
             }
 
@@ -199,10 +278,10 @@ function cacheCollisionBoundary() {
                 y === 0 ||
                 x === boundaryCanvas.width - 1 ||
                 y === boundaryCanvas.height - 1 ||
-                !isCollisionMaskColor(sourceData, pixelIndex - 4) ||
-                !isCollisionMaskColor(sourceData, pixelIndex + 4) ||
-                !isCollisionMaskColor(sourceData, pixelIndex - rowStride) ||
-                !isCollisionMaskColor(sourceData, pixelIndex + rowStride);
+                !isCollisionMaskColor(sourceData, pixelIndex - 4, x - 1, y) ||
+                !isCollisionMaskColor(sourceData, pixelIndex + 4, x + 1, y) ||
+                !isCollisionMaskColor(sourceData, pixelIndex - rowStride, x, y - 1) ||
+                !isCollisionMaskColor(sourceData, pixelIndex + rowStride, x, y + 1);
 
             if (!touchesOutside) {
                 continue;
@@ -228,6 +307,7 @@ Object.values(assets).forEach((image) => {
         if (image === assets.collisionMap) {
             collisionMaskData = null;
             collisionBoundaryCanvas = null;
+            collisionRects = [...PRECOMPUTED_COLLISION_RECTS];
             collisionMapLoadState = "image error";
         }
 
@@ -312,9 +392,9 @@ function screenToWorldPoint(screenX, screenY, worldRect) {
 
 function getPlayerHitbox(nextX = player.x, nextY = player.y) {
     return {
-        x: nextX,
-        y: nextY + PLAYER_HITBOX_OFFSET_Y,
-        width: PLAYER_WIDTH,
+        x: nextX + (PLAYER_WIDTH - PLAYER_HITBOX_WIDTH) / 2,
+        y: nextY + PLAYER_HEIGHT - PLAYER_HITBOX_HEIGHT,
+        width: PLAYER_HITBOX_WIDTH,
         height: PLAYER_HITBOX_HEIGHT
     };
 }
@@ -557,9 +637,9 @@ function drawCollisionDebug(worldRect) {
     ctx.fillStyle = "#ffffff";
     ctx.font = "12px monospace";
     ctx.textBaseline = "top";
-    ctx.fillText(hasCollisionMap ? "Mode: bgfinal precalculated" : "Mode: no precalc collisions", worldRect.x + 20, worldRect.y + 20);
+    ctx.fillText(hasCollisionMap ? "Mode: image collision rects" : "Mode: no collision rects", worldRect.x + 20, worldRect.y + 20);
     ctx.fillText(`Player: ${Math.round(player.x)}, ${Math.round(player.y)}`, worldRect.x + 20, worldRect.y + 34);
-    ctx.fillText(hasCollisionMap ? "Source: HsBG/bgfinal.png" : "Source: none", worldRect.x + 20, worldRect.y + 48);
+    ctx.fillText(hasCollisionMap ? "Source: HsBG/bgfinalv2.png" : "Source: none", worldRect.x + 20, worldRect.y + 48);
     ctx.fillText(`Map hit: ${isCollisionActive}`, worldRect.x + 20, worldRect.y + 62);
     ctx.fillText(`Map rects: ${collisionRects.length}`, worldRect.x + 20, worldRect.y + 76);
     ctx.fillText(`Mask image: ${collisionMapLoadState}`, worldRect.x + 20, worldRect.y + 90);
@@ -592,7 +672,6 @@ function draw(force = false) {
     }
 
     ctx.clearRect(0, 0, viewport.width, viewport.height);
-    drawNpc(worldRect);
     drawPlayer(worldRect);
     drawCollisionDebug(worldRect);
     previousRenderState = renderState;
