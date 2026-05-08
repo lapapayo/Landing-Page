@@ -109,7 +109,7 @@ const INTERACTION_ZONES = [
             height: 96
         },
         message: "Esta pagina se basa en un Wordle de Pokemon. En resumen, sera un juego en el que tienes que intentar acertar el Pokemon del que se esta preguntando. Buena suerte.",
-        messagePath: "mensajes/Armario.txt"
+        messagePath: "Mensajes/Armario.txt"
     },
     {
         id: "portal-juego",
@@ -651,15 +651,14 @@ async function getZoneMessage(zone) {
     }
 
     try {
-        const messageFileName = zone.messagePath.split("/").pop();
-        const response = await fetch(`/api/messages/${encodeURIComponent(messageFileName)}?v=${ASSET_VERSION}`);
+        const response = await fetch(`${zone.messagePath}?v=${ASSET_VERSION}`);
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
 
-        const data = await response.json();
-        const message = (data.content || zone.message).trim() || zone.message;
+        const fileContent = await response.text();
+        const message = fileContent.trim() || zone.message;
         dialogMessageCache.set(zone.id, message);
         return message;
     } catch (error) {
