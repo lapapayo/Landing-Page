@@ -56,7 +56,50 @@ const npc = {
     }
 };
 
+const JOY_ZONE_ID = "joy";
+const PC_ZONE_ID = "portal-juego";
+const PC_OBJECT_BOUNDS = {
+    x: 1418,
+    y: 78,
+    width: 119,
+    height: 225
+};
+const PC_INTERACTION_BOUNDS = {
+    x: PC_OBJECT_BOUNDS.x - 12,
+    y: PC_OBJECT_BOUNDS.y + PC_OBJECT_BOUNDS.height - 8,
+    width: PC_OBJECT_BOUNDS.width +24,
+    height: 130
+};
+const PC_FLICK_DURATION = 140;
+// Crop the full-canvas PC sprites down to the cabinet before drawing them over the slot from HsLD.
+const PC_SPRITE_SOURCE_BOUNDS = {
+    x: 990,
+    y: 426,
+    width: 130,
+    height: 222
+};
+const PC_SPRITE_DEST_BOUNDS = {
+    x: PC_OBJECT_BOUNDS.x + Math.round((PC_OBJECT_BOUNDS.width - (PC_SPRITE_SOURCE_BOUNDS.width * (PC_OBJECT_BOUNDS.height / PC_SPRITE_SOURCE_BOUNDS.height))) / 2),
+    y: PC_OBJECT_BOUNDS.y,
+    width: Math.round(PC_SPRITE_SOURCE_BOUNDS.width * (PC_OBJECT_BOUNDS.height / PC_SPRITE_SOURCE_BOUNDS.height)),
+    height: PC_OBJECT_BOUNDS.height
+};
+
 const INTERACTION_ZONES = [
+    {
+        id: JOY_ZONE_ID,
+        area: {
+            x: npc.joy.x - 12,
+            y: npc.joy.y + npc.joy.height - 8,
+            width: npc.joy.width + 24,
+            height: 112
+        },
+        type: "menu",
+        options: [
+            { id: "jugar", label: "Jugar" },
+            { id: "atras", label: "Atras" }
+        ]
+    },
     {
         id: "armario",
         area: {
@@ -70,12 +113,7 @@ const INTERACTION_ZONES = [
     },
     {
         id: "portal-juego",
-        area: {
-            x: 888,
-            y: 300,
-            width: 144,
-            height: 192
-        },
+        area: { ...PC_INTERACTION_BOUNDS },
         type: "menu",
         options: [
             { id: "jugar", label: "Jugar" },
@@ -114,6 +152,8 @@ let activeMenuZoneId = null;
 let activeMenuOptions = [];
 let activeMenuSelectionIndex = 0;
 let isMenuVisible = false;
+let pcVisualState = "off";
+let pcFlickTimeoutId = null;
 const movementKeyOrder = [];
 
 backgroundCtx.imageSmoothingEnabled = false;
@@ -130,6 +170,8 @@ const assets = {
     background: loadSprite("bgconjoy.png"),
     collisionMap: loadSprite("HsBG/bgfinalv2.png"),
     nurseJoy: loadSprite("Spritesnpcs/joynurses.png"),
+    pcOn: loadSprite("Spritesheet/spritepcon2.png"),
+    pcFlick: loadSprite("Spritesheet/spritepflick.png"),
     playerDownIdle: loadSprite("Spritesheet/abajoquieto.png"),
     playerDownWalk1: loadSprite("Spritesheet/abajoandando1.png"),
     playerUpIdle: loadSprite("Spritesheet/arribaquieto.png"),
@@ -171,7 +213,11 @@ const animations = {
 };
 
 function handleAssetReady(image) {
-    if (image === assets.background) {
+    if (
+        image === assets.background ||
+        image === assets.pcOn ||
+        image === assets.pcFlick
+    ) {
         backgroundDirty = true;
     }
 
@@ -495,11 +541,16 @@ function showChoiceMenu(zone) {
 }
 
 function hideChoiceMenu() {
+    const closingMenuZoneId = activeMenuZoneId;
     choiceBox.style.display = "none";
     activeMenuZoneId = null;
     activeMenuOptions = [];
     activeMenuSelectionIndex = 0;
     isMenuVisible = false;
+
+    if (closingMenuZoneId === PC_ZONE_ID) {
+        resetPcVisualState();
+    }
 }
 
 function moveMenuSelection(step) {
@@ -600,14 +651,15 @@ async function getZoneMessage(zone) {
     }
 
     try {
-        const response = await fetch(`${zone.messagePath}?v=${ASSET_VERSION}`);
+        const messageFileName = zone.messagePath.split("/").pop();
+        const response = await fetch(`/api/messages/${encodeURIComponent(messageFileName)}?v=${ASSET_VERSION}`);
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
 
-        const text = (await response.text()).trim();
-        const message = text || zone.message;
+        const data = await response.json();
+        const message = (data.content || zone.message).trim() || zone.message;
         dialogMessageCache.set(zone.id, message);
         return message;
     } catch (error) {
@@ -633,6 +685,36 @@ function hideDialog() {
     isDialogVisible = false;
 }
 
+function clearPcFlickTimeout() {
+    if (pcFlickTimeoutId !== null) {
+        window.clearTimeout(pcFlickTimeoutId);
+        pcFlickTimeoutId = null;
+    }
+}
+
+function setPcVisualState(nextState) {
+    if (pcVisualState === nextState) {
+        return;
+    }
+
+    pcVisualState = nextState;
+    backgroundDirty = true;
+}
+
+function startPcBootSequence() {
+    clearPcFlickTimeout();
+    setPcVisualState("flick");
+    pcFlickTimeoutId = window.setTimeout(() => {
+        pcFlickTimeoutId = null;
+        setPcVisualState("on");
+    }, PC_FLICK_DURATION);
+}
+
+function resetPcVisualState() {
+    clearPcFlickTimeout();
+    setPcVisualState("off");
+}
+
 function getActiveInteractionZone() {
     const playerHitbox = getPlayerHitbox();
     return INTERACTION_ZONES.find((zone) => rectanglesOverlap(playerHitbox, zone.area)) || null;
@@ -640,17 +722,26 @@ function getActiveInteractionZone() {
 
 function updateInteractionMessage() {
     const activeZone = getActiveInteractionZone();
+    const previousZoneId = activeInteractionZoneId;
 
     if (!activeZone) {
-        if (activeInteractionZoneId !== null) {
+        if (previousZoneId !== null) {
             activeInteractionZoneId = null;
             hideDialog();
             hideChoiceMenu();
         }
+
+        if (previousZoneId === PC_ZONE_ID) {
+            resetPcVisualState();
+        }
         return;
     }
 
-    if (activeInteractionZoneId !== activeZone.id) {
+    if (previousZoneId !== activeZone.id) {
+        if (previousZoneId === PC_ZONE_ID) {
+            resetPcVisualState();
+        }
+
         activeInteractionZoneId = activeZone.id;
         if (activeZone.type !== "menu") {
             hideChoiceMenu();
@@ -677,6 +768,10 @@ async function handleInteraction() {
         if (isMenuVisible && activeMenuZoneId === activeZone.id) {
             confirmMenuSelection();
             return;
+        }
+
+        if (activeZone.id === PC_ZONE_ID) {
+            startPcBootSequence();
         }
 
         showChoiceMenu(activeZone);
@@ -776,6 +871,8 @@ function drawBackground(worldRect) {
         worldRect.height
     );
 
+    drawPcOverlay(worldRect);
+
     if (SHOW_WALKABLE_BOUNDARY && collisionBoundaryCanvas) {
         backgroundCtx.drawImage(
             collisionBoundaryCanvas,
@@ -785,6 +882,37 @@ function drawBackground(worldRect) {
             worldRect.height
         );
     }
+}
+
+function drawPcOverlay(worldRect) {
+    let image = null;
+
+    if (pcVisualState === "flick") {
+        image = assets.pcFlick;
+    } else if (pcVisualState === "on") {
+        image = assets.pcOn;
+    }
+
+    if (!image || !image.complete || !image.naturalWidth) {
+        return;
+    }
+
+    const screenX = Math.round(worldToScreenX(PC_SPRITE_DEST_BOUNDS.x, worldRect));
+    const screenY = Math.round(worldToScreenY(PC_SPRITE_DEST_BOUNDS.y, worldRect));
+    const screenWidth = Math.round(worldToScreenWidth(PC_SPRITE_DEST_BOUNDS.width, worldRect));
+    const screenHeight = Math.round(worldToScreenHeight(PC_SPRITE_DEST_BOUNDS.height, worldRect));
+
+    backgroundCtx.drawImage(
+        image,
+        PC_SPRITE_SOURCE_BOUNDS.x,
+        PC_SPRITE_SOURCE_BOUNDS.y,
+        PC_SPRITE_SOURCE_BOUNDS.width,
+        PC_SPRITE_SOURCE_BOUNDS.height,
+        screenX,
+        screenY,
+        screenWidth,
+        screenHeight
+    );
 }
 
 function drawNpc(worldRect) {
